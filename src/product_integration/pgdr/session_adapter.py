@@ -95,6 +95,22 @@ class PGDRSessionOutcome:
     AUTHORITY_REJECTION = "AUTHORITY_REJECTION"
     CONFLICT = "CONFLICT"
     CPL_PERSISTENCE_FAILURE = "CPL_PERSISTENCE_FAILURE"
+    # PI-03-VF-01 repair: a PGDR-side/session-continuity failure (e.g. the
+    # SessionController.submit_answer() KeyError that results when a
+    # session started by one controller instance is resumed through a
+    # genuinely different instance, per §32's disclosed limitation) is
+    # NOT a CPL persistence failure and must never be reported as one.
+    # Named and reasoned exactly like PI-01's own precedent
+    # (VIRRegistrationOutcome.VIR_TECHNICAL_FAILURE, kept distinct from
+    # CPL_PERSISTENCE_FAILURE there too) and grounded in CPL's own
+    # existing RunnerOutcome.TECHNICAL_FAILURE category (app/cpl/runners/
+    # outcomes.py, unchanged, not extended) — "the runner/technical
+    # execution itself failed" is exactly what a PGDR SessionController
+    # exception represents; it is never a CPL database/persistence
+    # problem. No new CPL outcome was invented; this is PI-03's own
+    # product-integration-layer outcome enum applying the same category
+    # CPL already draws.
+    PGDR_TECHNICAL_FAILURE = "PGDR_TECHNICAL_FAILURE"
 
 
 @dataclass
@@ -281,7 +297,10 @@ def start_pgdr_session(
     try:
         pgdr_session = session_controller.start(request)
     except Exception as exc:  # noqa: BLE001 — a genuine PGDR-side failure
-        return _mark_failed(execution_id, detail=f"PGDR start() failed: {exc}", authority=authority)
+        return _mark_failed(
+            execution_id, detail=f"PGDR start() failed: {exc}", authority=authority,
+            outcome=PGDRSessionOutcome.PGDR_TECHNICAL_FAILURE,
+        )
 
     return _persist_current_state(execution_id=execution_id, pgdr_session=pgdr_session, authority=authority)
 
@@ -316,7 +335,10 @@ def continue_pgdr_session(
     try:
         resumed_session = session_controller.submit_answer(pgdr_session, answer)
     except Exception as exc:  # noqa: BLE001
-        return _mark_failed(execution_id, detail=f"PGDR submit_answer() failed: {exc}", authority=authority)
+        return _mark_failed(
+            execution_id, detail=f"PGDR submit_answer() failed: {exc}", authority=authority,
+            outcome=PGDRSessionOutcome.PGDR_TECHNICAL_FAILURE,
+        )
 
     return _persist_current_state(execution_id=execution_id, pgdr_session=resumed_session, authority=authority)
 
@@ -339,14 +361,28 @@ def _existing_terminal_or_blocked_result(execution_id: UUID) -> PGDRAdapterResul
         )
 
 
-def _mark_failed(execution_id: UUID, *, detail: str, authority: AuthorityContext) -> PGDRAdapterResult:
+def _mark_failed(
+    execution_id: UUID, *, detail: str, authority: AuthorityContext,
+    outcome: str = PGDRSessionOutcome.CPL_PERSISTENCE_FAILURE,
+) -> PGDRAdapterResult:
     """Best-effort: mark the already-admitted execution FAILED in its own
     short transaction — never masks the original failure if this itself
-    fails. Unchanged pattern from PI-01."""
+    fails. Unchanged pattern from PI-01.
+
+    PI-03-VF-01 repair: `outcome` is now an explicit parameter, defaulting
+    to `CPL_PERSISTENCE_FAILURE` (correct for every call site inside
+    `_persist_current_state`, which genuinely wraps CPL-side operations
+    only). Callers reporting a PGDR-side exception (start()/submit_answer())
+    pass `outcome=PGDR_TECHNICAL_FAILURE` explicitly — the classification
+    follows the operation that actually failed, not merely the fact that
+    some exception occurred (repair instruction §11). Marking the
+    execution FAILED at the CPL layer is unchanged either way: a PGDR-side
+    failure still leaves the governed execution in a correctly-terminal
+    FAILED state; only the *reported* outcome now distinguishes why."""
     try:
         with session_scope() as session:
             persist_runner_report(session, execution_id=execution_id, new_status="FAILED", authority=authority)
             session.commit()
     except Exception:  # noqa: BLE001
         pass
-    return PGDRAdapterResult(outcome=PGDRSessionOutcome.CPL_PERSISTENCE_FAILURE, execution_id=execution_id, detail=detail)
+    return PGDRAdapterResult(outcome=outcome, execution_id=execution_id, detail=detail)

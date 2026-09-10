@@ -357,3 +357,113 @@ class TestPGDRSessionAdapter:
         count = session.query(RunnerExecution).filter(RunnerExecution.execution_id == execution_id).count()
         assert count == 1
         session.close()
+
+
+class TestPI03VF01Repair:
+    """PI-03-VF-01 repair tests (docs/build/PI_03_VF_01_REPAIR_EVIDENCE_v0.md).
+
+    Independent verification (docs/build/PI_03_INDEPENDENT_VERIFICATION_v0.md)
+    found that a PGDR-side/session-continuity failure -- specifically, the
+    real KeyError SessionController.submit_answer() raises when a session
+    started by one controller instance is resumed through a genuinely
+    different instance -- was reported through the adapter's public API as
+    outcome=CPL_PERSISTENCE_FAILURE, indistinguishable from an actual CPL
+    database failure. These tests prove the two are now distinguishable,
+    per the repair instruction's own §12/§13/§14 mandatory tests."""
+
+    # -- §12: cross-controller resume classification -------------------------
+
+    def test_cross_controller_resume_failure_is_not_cpl_persistence_failure(self, cpl_case_context, full_authority):
+        controller_a = SessionController()
+        result = start_pgdr_session(
+            session_controller=controller_a, request=make_request(NOISE_COMPLAINT),
+            case_id=cpl_case_context["case_id"], asset_id=cpl_case_context["asset_id"],
+            vir_artifact_id=None, authority=full_authority,
+        )
+        assert result.outcome == PGDRSessionOutcome.BLOCKED
+
+        controller_b = SessionController()
+        assert controller_b is not controller_a  # genuinely distinct instance, not a reused reference
+
+        q = result.pending_questions[0]
+        answer_value = q.choices[0] if q.choices else "yes"
+        resumed = continue_pgdr_session(
+            session_controller=controller_b, pgdr_session=result.session,
+            answer=Answer(question_id=q.question_id, value=answer_value),
+            execution_id=result.execution_id, authority=full_authority,
+        )
+
+        assert resumed.outcome != PGDRSessionOutcome.CPL_PERSISTENCE_FAILURE
+        assert resumed.outcome == PGDRSessionOutcome.PGDR_TECHNICAL_FAILURE
+
+        session = SessionLocal()
+        execution = session.get(RunnerExecution, result.execution_id)
+        assert execution.execution_status == "FAILED"  # still correctly terminalized at the CPL layer
+        session.close()
+
+    # -- §13: genuine CPL persistence failure classification -----------------
+
+    def test_genuine_cpl_persistence_failure_still_classified_correctly(self, cpl_case_context, full_authority, monkeypatch):
+        import product_integration.pgdr.session_adapter as adapter_module
+
+        original_register_artifact = adapter_module.register_artifact
+        def _boom(*a, **k):
+            raise RuntimeError("genuine injected CPL persistence failure")
+        adapter_module.register_artifact = _boom
+        try:
+            sc = SessionController()
+            result = start_pgdr_session(
+                session_controller=sc, request=make_request(SMOKE_COMPLAINT), case_id=cpl_case_context["case_id"],
+                asset_id=cpl_case_context["asset_id"], vir_artifact_id=None, authority=full_authority,
+            )
+        finally:
+            adapter_module.register_artifact = original_register_artifact
+
+        assert result.outcome == PGDRSessionOutcome.CPL_PERSISTENCE_FAILURE
+
+        session = SessionLocal()
+        execution = session.get(RunnerExecution, result.execution_id)
+        assert execution.execution_status == "FAILED"
+        artifact_count = session.query(RunnerArtifact).filter(RunnerArtifact.execution_id == result.execution_id).count()
+        assert artifact_count == 0
+        session.close()
+
+    # -- §14: explicit semantic pair test -------------------------------------
+
+    def test_pgdr_technical_failure_and_cpl_persistence_failure_are_distinct_values(self):
+        assert PGDRSessionOutcome.PGDR_TECHNICAL_FAILURE != PGDRSessionOutcome.CPL_PERSISTENCE_FAILURE
+        all_outcomes = {
+            PGDRSessionOutcome.BLOCKED, PGDRSessionOutcome.COMPLETED, PGDRSessionOutcome.AUTHORITY_REJECTION,
+            PGDRSessionOutcome.CONFLICT, PGDRSessionOutcome.CPL_PERSISTENCE_FAILURE,
+            PGDRSessionOutcome.PGDR_TECHNICAL_FAILURE,
+        }
+        assert len(all_outcomes) == 6  # all six values genuinely distinct strings
+
+    # -- §16: preserve ESCALATED semantics (regression, re-run explicitly) ----
+
+    def test_escalated_still_maps_to_completed_after_repair(self, cpl_case_context, full_authority):
+        sc = SessionController()
+        result = start_pgdr_session(
+            session_controller=sc, request=make_request(SMOKE_COMPLAINT), case_id=cpl_case_context["case_id"],
+            asset_id=cpl_case_context["asset_id"], vir_artifact_id=None, authority=full_authority,
+        )
+        assert result.outcome == PGDRSessionOutcome.COMPLETED
+        assert result.pgdr_session_state == "escalated"
+
+    # -- §7/§25: repair must not solve the underlying PGDR limitation --------
+
+    def test_underlying_pgdr_limitation_remains_unchanged(self, cpl_case_context, full_authority):
+        """The repair does not (and must not) make cross-controller resume
+        actually work -- only its reported classification changed. This
+        documents that the KeyError itself is still real, unmodified PGDR
+        behavior, not silently papered over."""
+        controller_a = SessionController()
+        result = start_pgdr_session(
+            session_controller=controller_a, request=make_request(NOISE_COMPLAINT),
+            case_id=cpl_case_context["case_id"], asset_id=cpl_case_context["asset_id"],
+            vir_artifact_id=None, authority=full_authority,
+        )
+        controller_b = SessionController()
+        q = result.pending_questions[0]
+        with pytest.raises(KeyError):
+            controller_b.submit_answer(result.session, Answer(question_id=q.question_id, value="yes"))
