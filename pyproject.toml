@@ -1,0 +1,27 @@
+[project]
+name = "cpl-product-integration"
+version = "0.1.0"
+description = "Product-integration composition layer for CPL + VIR (+ PGDR, later PI units). Not part of CPL, VIR, or PGDR."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
