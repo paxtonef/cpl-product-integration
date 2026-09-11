@@ -32,8 +32,10 @@ from product_integration.cpl_registration import VIRRegistrationOutcome, registe
 from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.orchestration.case_orchestration import (
     DiagnosticStartOutcome,
+    ReconciliationOutcome,
     RegistrationOutcome,
     continue_vehicle_diagnostic,
+    reconcile_case_orchestration,
     register_vehicle_for_contact,
     resolve_vehicle_identity,
     start_vehicle_diagnostic,
@@ -401,3 +403,288 @@ class TestRestartDurability:
         assert vir_artifact is not None
         assert pgdr_artifact is not None
         fresh.close()
+
+
+class TestPI04VF01Repair:
+    """PI-04-VF-01 repair tests (docs/build/PI_04_VF_01_REPAIR_EVIDENCE_v0.md).
+
+    Independent verification (docs/build/PI_04_INDEPENDENT_VERIFICATION_v0.md)
+    found that a Case-side synchronization failure occurring AFTER PGDR had
+    already correctly reached and persisted BLOCKED left the Case stale and
+    surfaced to the caller as a raw, undocumented exception. These tests
+    prove: (1) the exact VF-01 scenario now yields a typed, reconcilable
+    failure with zero raw exception; (2) the failure category is genuinely
+    distinct from PGDR_TECHNICAL_FAILURE/CPL_PERSISTENCE_FAILURE/BLOCKED
+    success; (3) reconciliation safely recovers using the same, already-
+    persisted PGDR execution -- never a new one; (4) reconciliation is
+    idempotent; (5) every previously-verified path remains intact."""
+
+    async def _resolved_case(self, full_authority, vir_client):
+        contact_id, asset_id = register(full_authority)
+        resolution = await resolve_vehicle_identity(
+            contact_id=contact_id, asset_id=asset_id, vir_client=vir_client, vir_request=make_vin_request(),
+            authority=full_authority, case_idempotency_key=f"case-{uuid.uuid4().hex[:10]}",
+        )
+        assert resolution.outcome == VIRRegistrationOutcome.SUCCESS
+        return resolution
+
+    # -- §15: exact VF-01 reproduction ----------------------------------------
+
+    async def test_vf01_exact_reproduction_no_raw_exception(self, full_authority, vir_client, monkeypatch):
+        resolution = await self._resolved_case(full_authority, vir_client)
+
+        import product_integration.orchestration.case_orchestration as orch_module
+        original = orch_module.transition_case_status
+        def _boom(*a, **k):
+            raise RuntimeError("VF-01 injected Case transition failure")
+        orch_module.transition_case_status = _boom
+        try:
+            sc = SessionController()
+            start = await start_vehicle_diagnostic(
+                case_id=resolution.case_id, session_controller=sc, initial_complaint=NOISE_COMPLAINT,
+                user_context=UserContext(), consent=Consent(), authority=full_authority,
+            )  # must NOT raise
+        finally:
+            orch_module.transition_case_status = original
+
+        assert start.outcome == DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE
+        assert start.pgdr_execution_id is not None
+        assert start.pgdr_session is not None
+        assert start.pending_questions
+
+        session = SessionLocal()
+        execution = session.get(RunnerExecution, start.pgdr_execution_id)
+        case = session.get(Case, resolution.case_id)
+        assert execution.execution_status == "BLOCKED"  # preserved, valid, untouched
+        assert case.case_status != "WAITING_FOR_USER"  # honestly stale, not falsely reported synced
+        pgdr_count = session.query(RunnerExecution).filter(
+            RunnerExecution.case_id == resolution.case_id, RunnerExecution.runner_type == "PGDR").count()
+        assert pgdr_count == 1  # no duplicate
+        artifact_count = session.query(RunnerArtifact).filter(RunnerArtifact.execution_id == start.pgdr_execution_id).count()
+        assert artifact_count == 0  # BLOCKED never has an artifact -- confirms no duplicate artifact concern here
+        session.close()
+
+    # -- §16: failure classification ------------------------------------------
+
+    def test_case_orchestration_failure_distinct_from_other_outcomes(self):
+        assert DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE != DiagnosticStartOutcome.PGDR_TECHNICAL_FAILURE
+        assert DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE != DiagnosticStartOutcome.CPL_PERSISTENCE_FAILURE
+        assert DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE != DiagnosticStartOutcome.BLOCKED
+        assert DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE != DiagnosticStartOutcome.COMPLETED
+
+    async def test_pgdr_technical_failure_still_distinct_after_repair(self, full_authority, vir_client):
+        """PI-03's own cross-controller failure classification (PI-03-VF-01)
+        must remain unaffected by this repair -- a PGDR-side failure is
+        still PGDR_TECHNICAL_FAILURE, never CASE_ORCHESTRATION_FAILURE."""
+        resolution = await self._resolved_case(full_authority, vir_client)
+        controller_a = SessionController()
+        start = await start_vehicle_diagnostic(
+            case_id=resolution.case_id, session_controller=controller_a, initial_complaint=NOISE_COMPLAINT,
+            user_context=UserContext(), consent=Consent(), authority=full_authority,
+        )
+        assert start.outcome == PGDRSessionOutcome.BLOCKED
+        controller_b = SessionController()  # genuinely different instance
+        q = start.pending_questions[0]
+        resumed = await continue_vehicle_diagnostic(
+            case_id=resolution.case_id, execution_id=start.pgdr_execution_id, session_controller=controller_b,
+            pgdr_session=start.pgdr_session, answer=Answer(question_id=q.question_id, value=(q.choices[0] if q.choices else "yes")),
+            authority=full_authority,
+        )
+        assert resumed.outcome == "PGDR_TECHNICAL_FAILURE"
+        assert resumed.outcome != DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE
+
+    async def test_cpl_persistence_failure_still_distinct_after_repair(self, full_authority, vir_client):
+        resolution = await self._resolved_case(full_authority, vir_client)
+        import product_integration.pgdr.session_adapter as pgdr_adapter_module
+        original = pgdr_adapter_module.register_artifact
+        def _boom(*a, **k):
+            raise RuntimeError("injected genuine CPL persistence failure")
+        pgdr_adapter_module.register_artifact = _boom
+        try:
+            sc = SessionController()
+            start = await start_vehicle_diagnostic(
+                case_id=resolution.case_id, session_controller=sc, initial_complaint=SMOKE_COMPLAINT,
+                user_context=UserContext(), consent=Consent(), authority=full_authority,
+            )
+        finally:
+            pgdr_adapter_module.register_artifact = original
+        assert start.outcome == "CPL_PERSISTENCE_FAILURE"
+        assert start.outcome != DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE
+
+    # -- §17: safe reconciliation ----------------------------------------------
+
+    async def test_reconciliation_syncs_case_using_existing_execution(self, full_authority, vir_client):
+        resolution = await self._resolved_case(full_authority, vir_client)
+
+        import product_integration.orchestration.case_orchestration as orch_module
+        original = orch_module.transition_case_status
+        orch_module.transition_case_status = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("injected"))
+        try:
+            sc = SessionController()
+            start = await start_vehicle_diagnostic(
+                case_id=resolution.case_id, session_controller=sc, initial_complaint=NOISE_COMPLAINT,
+                user_context=UserContext(), consent=Consent(), authority=full_authority,
+            )
+        finally:
+            orch_module.transition_case_status = original
+        assert start.outcome == DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE
+
+        recon = reconcile_case_orchestration(
+            case_id=resolution.case_id, pgdr_execution_id=start.pgdr_execution_id, authority=full_authority,
+        )
+        assert recon.outcome == ReconciliationOutcome.RECONCILED
+        assert recon.case_id == resolution.case_id
+        assert recon.pgdr_execution_id == start.pgdr_execution_id
+
+        session = SessionLocal()
+        case = session.get(Case, resolution.case_id)
+        assert case.case_status == "WAITING_FOR_USER"
+        assert case.current_execution_id == start.pgdr_execution_id
+        pgdr_count = session.query(RunnerExecution).filter(
+            RunnerExecution.case_id == resolution.case_id, RunnerExecution.runner_type == "PGDR").count()
+        assert pgdr_count == 1  # same execution, not a new one
+        session.close()
+
+        # Original PGDR session remains usable to continue the real diagnostic.
+        q = start.pending_questions[0]
+        resumed = await continue_vehicle_diagnostic(
+            case_id=resolution.case_id, execution_id=start.pgdr_execution_id, session_controller=sc,
+            pgdr_session=start.pgdr_session, answer=Answer(question_id=q.question_id, value=(q.choices[0] if q.choices else "yes")),
+            authority=full_authority,
+        )
+        assert resumed.outcome in (PGDRSessionOutcome.BLOCKED, PGDRSessionOutcome.COMPLETED)
+
+    # -- §18: idempotent recovery ------------------------------------------------
+
+    async def test_reconciliation_is_idempotent(self, full_authority, vir_client):
+        resolution = await self._resolved_case(full_authority, vir_client)
+        import product_integration.orchestration.case_orchestration as orch_module
+        original = orch_module.transition_case_status
+        orch_module.transition_case_status = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("injected"))
+        try:
+            sc = SessionController()
+            start = await start_vehicle_diagnostic(
+                case_id=resolution.case_id, session_controller=sc, initial_complaint=NOISE_COMPLAINT,
+                user_context=UserContext(), consent=Consent(), authority=full_authority,
+            )
+        finally:
+            orch_module.transition_case_status = original
+
+        r1 = reconcile_case_orchestration(case_id=resolution.case_id, pgdr_execution_id=start.pgdr_execution_id, authority=full_authority)
+        r2 = reconcile_case_orchestration(case_id=resolution.case_id, pgdr_execution_id=start.pgdr_execution_id, authority=full_authority)
+        assert r1.outcome == ReconciliationOutcome.RECONCILED
+        assert r2.outcome == ReconciliationOutcome.RECONCILED
+
+        session = SessionLocal()
+        pgdr_count = session.query(RunnerExecution).filter(
+            RunnerExecution.case_id == resolution.case_id, RunnerExecution.runner_type == "PGDR").count()
+        assert pgdr_count == 1
+        session.close()
+
+    async def test_reconciliation_on_terminal_execution(self, full_authority, vir_client):
+        """Also proves reconciliation correctly derives RESOLVED (not just
+        WAITING_FOR_USER) from the execution's own current persisted state."""
+        resolution = await self._resolved_case(full_authority, vir_client)
+        import product_integration.orchestration.case_orchestration as orch_module
+        original = orch_module.transition_case_status
+        orch_module.transition_case_status = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("injected"))
+        try:
+            sc = SessionController()
+            start = await start_vehicle_diagnostic(
+                case_id=resolution.case_id, session_controller=sc, initial_complaint=SMOKE_COMPLAINT,  # escalates immediately
+                user_context=UserContext(), consent=Consent(), authority=full_authority,
+            )
+        finally:
+            orch_module.transition_case_status = original
+        assert start.outcome == DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE
+
+        recon = reconcile_case_orchestration(case_id=resolution.case_id, pgdr_execution_id=start.pgdr_execution_id, authority=full_authority)
+        assert recon.outcome == ReconciliationOutcome.RECONCILED
+        assert recon.observed_pgdr_status == "COMPLETED"
+
+        session = SessionLocal()
+        case = session.get(Case, resolution.case_id)
+        assert case.case_status == "RESOLVED"
+        session.close()
+
+    # -- §19-23: regressions -----------------------------------------------------
+
+    async def test_happy_path_unaffected_by_repair(self, full_authority, vir_client):
+        resolution = await self._resolved_case(full_authority, vir_client)
+        sc = SessionController()
+        start = await start_vehicle_diagnostic(
+            case_id=resolution.case_id, session_controller=sc, initial_complaint=NOISE_COMPLAINT,
+            user_context=UserContext(), consent=Consent(), authority=full_authority,
+        )
+        assert start.outcome == PGDRSessionOutcome.BLOCKED
+        final = await drive_to_completion(resolution.case_id, sc, start, full_authority)
+        assert final.outcome == PGDRSessionOutcome.COMPLETED
+        session = SessionLocal()
+        case = session.get(Case, resolution.case_id)
+        assert case.case_status == "RESOLVED"
+        session.close()
+
+    async def test_normal_blocked_path_still_syncs_correctly(self, full_authority, vir_client):
+        resolution = await self._resolved_case(full_authority, vir_client)
+        sc = SessionController()
+        start = await start_vehicle_diagnostic(
+            case_id=resolution.case_id, session_controller=sc, initial_complaint=NOISE_COMPLAINT,
+            user_context=UserContext(), consent=Consent(), authority=full_authority,
+        )
+        assert start.outcome == PGDRSessionOutcome.BLOCKED
+        session = SessionLocal()
+        case = session.get(Case, resolution.case_id)
+        assert case.case_status == "WAITING_FOR_USER"
+        assert case.current_execution_id == start.pgdr_execution_id
+        session.close()
+
+    async def test_pi02_refusal_unaffected_by_repair(self, full_authority):
+        contact_id, asset_id = register(full_authority)
+        session = SessionLocal()
+        from app.cpl.cases.lifecycle import create_case
+        case_result = create_case(
+            session, primary_contact_id=contact_id, asset_id=asset_id, domain="AUTOMOTIVE",
+            case_type="VEHICLE_DIAGNOSTIC", authority=full_authority, idempotency_key=f"case-{uuid.uuid4().hex[:10]}",
+        )
+        session.commit()
+        case_id = case_result.object_id
+        session.close()
+
+        refused_resolution = VIRVehicleIdentityResolution(
+            request_id="PI04-VF01-REFUSAL", resolution_id=f"VIR-RES-{uuid.uuid4().hex[:12].upper()}",
+            resolution_status=VIRResolutionStatus.PROVIDER_UNAVAILABLE,
+            confidence=VIRConfidence(score=0.0, level=ConfidenceLevel.UNRESOLVED),
+        )
+        vir_result = register_vir_resolution_result(
+            vir_resolution=refused_resolution, case_id=case_id, asset_id=asset_id, authority=full_authority,
+        )
+        assert vir_result.outcome == VIRRegistrationOutcome.SUCCESS
+
+        sc = SessionController()
+        start = await start_vehicle_diagnostic(
+            case_id=case_id, session_controller=sc, initial_complaint=NOISE_COMPLAINT,
+            user_context=UserContext(), consent=Consent(), authority=full_authority,
+        )
+        assert start.outcome == DiagnosticStartOutcome.PI02_HANDOFF_REFUSED
+        session = SessionLocal()
+        case = session.get(Case, case_id)
+        assert case.case_status == "WAITING_FOR_EXTERNAL_INFORMATION"
+        pgdr_count = session.query(RunnerExecution).filter(
+            RunnerExecution.case_id == case_id, RunnerExecution.runner_type == "PGDR").count()
+        assert pgdr_count == 0
+        session.close()
+
+    async def test_escalated_unaffected_by_repair(self, full_authority, vir_client):
+        resolution = await self._resolved_case(full_authority, vir_client)
+        sc = SessionController()
+        start = await start_vehicle_diagnostic(
+            case_id=resolution.case_id, session_controller=sc, initial_complaint=SMOKE_COMPLAINT,
+            user_context=UserContext(), consent=Consent(), authority=full_authority,
+        )
+        assert start.outcome == PGDRSessionOutcome.COMPLETED
+        session = SessionLocal()
+        case = session.get(Case, resolution.case_id)
+        execution = session.get(RunnerExecution, start.pgdr_execution_id)
+        assert case.case_status == "RESOLVED"
+        assert execution.execution_status == "COMPLETED"
+        session.close()

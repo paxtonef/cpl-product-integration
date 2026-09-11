@@ -38,6 +38,27 @@ Case.current_execution_id is treated strictly as an opaque Case-side pointer
 (§13) — set to the VIR execution after VIR admission, then to the PGDR
 execution once PGDR starts. It is never read as if it carried execution
 semantics of its own.
+
+PI-04-VF-01 repair — honest orchestration, not fictional atomicity: when a
+domain execution (VIR admission or a PGDR result) has already been
+correctly and durably persisted by PI-01/PI-03, but the subsequent Case-side
+synchronization (`current_execution_id` + status transition, always
+performed together in one transaction via `_sync_case_with_execution`)
+cannot be completed, this module does NOT let the underlying exception
+propagate raw, does NOT pretend the two originally-separate persistence
+operations were one distributed atomic unit (they were never designed to be,
+and this repair does not change that), and does NOT roll back or discard the
+already-valid domain execution. It returns a typed
+`CASE_ORCHESTRATION_FAILURE` outcome carrying everything the caller needs
+to know what already-true fact the Case doesn't yet reflect, plus (for the
+PGDR case) a dedicated `reconcile_case_orchestration()` entry point that
+safely retries the Case-side sync using the SAME, already-persisted PGDR
+`RunnerExecution` as the sole source of truth — never re-invoking PGDR,
+never fabricating an answer, never creating a new Case or execution.
+`reconcile_case_orchestration()` is idempotent (re-derives the target status
+from the execution's own current persisted status on every call, and
+delegates to `transition_case_status`'s own existing idempotent-replay
+semantics).
 """
 from __future__ import annotations
 
@@ -66,7 +87,7 @@ from pgdr.models import DiagnosticSession
 from vir.domain.models import VehicleIdentityResolution as VIRVehicleIdentityResolution
 
 from product_integration.cpl_registration import VIRRegistrationOutcome, VIRRegistrationResult, register_vir_execution
-from product_integration.orchestration.errors import CaseNotFoundError, VIRArtifactNotFoundError
+from product_integration.orchestration.errors import CaseNotFoundError, CaseOrchestrationTransitionError, VIRArtifactNotFoundError
 from product_integration.pgdr.errors import VIRPGDRHandoffError
 from product_integration.pgdr.handoff_mapper import map_resolution
 from product_integration.pgdr.session_adapter import (
@@ -103,6 +124,23 @@ class DiagnosticStartOutcome:
     CONFLICT = "CONFLICT"
     PGDR_TECHNICAL_FAILURE = "PGDR_TECHNICAL_FAILURE"
     CPL_PERSISTENCE_FAILURE = "CPL_PERSISTENCE_FAILURE"
+    # PI-04-VF-01 repair: the PGDR domain result was already persisted
+    # correctly by PI-03 (execution + artifact, if terminal), but the
+    # subsequent Case-side synchronization (current_execution_id + status
+    # transition) failed. Genuinely distinct from PGDR_TECHNICAL_FAILURE
+    # (PGDR itself never failed here) and from CPL_PERSISTENCE_FAILURE
+    # (PI-03's own persistence never failed here either) — this is a
+    # narrower, PI-04-local category naming exactly which layer failed.
+    # Reconcilable via reconcile_case_orchestration(), never by
+    # re-invoking PGDR or creating new Case/execution state.
+    CASE_ORCHESTRATION_FAILURE = "CASE_ORCHESTRATION_FAILURE"
+
+
+class ReconciliationOutcome:
+    RECONCILED = "RECONCILED"
+    NOTHING_TO_RECONCILE = "NOTHING_TO_RECONCILE"
+    CASE_ORCHESTRATION_FAILURE = DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE
+    EXECUTION_NOT_FOUND = "EXECUTION_NOT_FOUND"
 
 
 @dataclass
@@ -144,6 +182,20 @@ class DiagnosticContinueResult:
     pgdr_session: Optional[DiagnosticSession] = None
     pending_questions: list = field(default_factory=list)
     pgdr_artifact_id: Optional[UUID] = None
+    detail: Optional[str] = None
+
+
+@dataclass
+class ReconciliationResult:
+    """PI-04-VF-01 repair: the result of `reconcile_case_orchestration`.
+    Never carries a PGDR session/answer — reconciliation only ever
+    re-derives Case state from the already-persisted PGDR RunnerExecution
+    row, it never talks to PGDR itself."""
+    outcome: str
+    case_id: Optional[UUID] = None
+    pgdr_execution_id: Optional[UUID] = None
+    pgdr_artifact_id: Optional[UUID] = None
+    observed_pgdr_status: Optional[str] = None
     detail: Optional[str] = None
 
 
@@ -261,9 +313,26 @@ async def resolve_vehicle_identity(
     )
 
     if vir_result.outcome == VIRRegistrationOutcome.SUCCESS:
-        _set_current_execution(case_id, vir_result.execution_id)
-        _transition_case(case_id, "IN_PROGRESS", authority=authority,
-                          idempotency_key=f"case-transition:{case_id}:IN_PROGRESS:{vir_result.execution_id}")
+        sync_error = _sync_case_with_execution(
+            case_id=case_id, execution_id=vir_result.execution_id, target_status="IN_PROGRESS", authority=authority,
+            observed_status_label=vir_result.outcome,
+        )
+        if sync_error is not None:
+            # PI-04-VF-01 repair: VIR's own execution/artifact are already
+            # correctly persisted by PI-01 (unaffected by this failure) —
+            # report the honest, typed Case-sync failure rather than
+            # letting the raw underlying exception propagate. Retrying
+            # this whole function is safe here (unlike PGDR): both
+            # create_case and register_vir_execution are themselves
+            # idempotent by their own governed request identity, so a
+            # caller can simply call resolve_vehicle_identity again with
+            # the same idempotency keys.
+            return VehicleIdentityResolutionResult(
+                outcome=DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE, contact_id=contact_id, asset_id=asset_id,
+                case_id=case_id, vir_execution_id=vir_result.execution_id, vir_artifact_id=vir_result.artifact_id,
+                cpl_resolution_status=vir_result.cpl_resolution_status,
+                detail=f"VIR resolution persisted correctly, but Case synchronization failed: {sync_error.underlying_error}",
+            )
 
     return VehicleIdentityResolutionResult(
         outcome=vir_result.outcome, contact_id=contact_id, asset_id=asset_id, case_id=case_id,
@@ -323,8 +392,16 @@ async def start_vehicle_diagnostic(
         # §16: PI-02 refusal -- do NOT start PGDR. Preserve VIR's domain
         # truth: nothing about the VIR result is altered or reinterpreted;
         # the Case simply cannot proceed to PGDR with this identity result.
-        _transition_case(case_id, "WAITING_FOR_EXTERNAL_INFORMATION", authority=authority,
-                          idempotency_key=f"case-transition:{case_id}:WAITING_FOR_EXTERNAL_INFORMATION:{vir_execution.execution_id}")
+        sync_error = _sync_case_with_execution(
+            case_id=case_id, execution_id=None, target_status="WAITING_FOR_EXTERNAL_INFORMATION", authority=authority,
+            observed_status_label="PI02_HANDOFF_REFUSED",
+        )
+        if sync_error is not None:
+            return DiagnosticStartResult(
+                outcome=DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE, case_id=case_id,
+                detail=f"PI-02 refused the VIR handoff (a true, unaffected fact), but Case synchronization to "
+                       f"WAITING_FOR_EXTERNAL_INFORMATION failed: {sync_error.underlying_error}",
+            )
         return DiagnosticStartResult(
             outcome=DiagnosticStartOutcome.PI02_HANDOFF_REFUSED, case_id=case_id,
             detail=f"PI-02 refused the VIR handoff: {exc}",
@@ -340,7 +417,29 @@ async def start_vehicle_diagnostic(
         vir_artifact_id=vir_artifact_id, authority=authority, resolver_version=resolver_version,
     )
 
-    _apply_pgdr_case_transition(case_id, pgdr_result, authority)
+    sync_error = _sync_case_with_pgdr_result(
+        case_id=case_id, pgdr_execution_id=pgdr_result.execution_id, pgdr_outcome=pgdr_result.outcome,
+        authority=authority,
+    )
+    if sync_error is not None:
+        # PI-04-VF-01 repair: pgdr_result was already fully and correctly
+        # persisted by PI-03 (RunnerExecution, and RunnerArtifact if
+        # terminal) BEFORE this point — that data is NOT rolled back or
+        # discarded merely because the subsequent Case-side sync failed
+        # (§6 of the repair instruction). The caller gets a typed,
+        # reconcilable failure carrying everything already-true about
+        # PGDR's own state (execution_id, session, pending_questions,
+        # artifact_id) alongside the fact that the Case doesn't yet
+        # reflect it — never a raw exception, never a silent false
+        # success (§4/§5/§7).
+        return DiagnosticStartResult(
+            outcome=DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE, case_id=case_id,
+            pgdr_execution_id=pgdr_result.execution_id, pgdr_session=pgdr_result.session,
+            pending_questions=pgdr_result.pending_questions, pgdr_artifact_id=pgdr_result.artifact_id,
+            detail=f"PGDR outcome {pgdr_result.outcome!r} was persisted correctly, but Case synchronization "
+                   f"failed: {sync_error.underlying_error}. Call reconcile_case_orchestration(case_id={case_id!r}, "
+                   f"pgdr_execution_id={pgdr_result.execution_id!r}) to safely retry — do not re-invoke PGDR.",
+        )
 
     return DiagnosticStartResult(
         outcome=pgdr_result.outcome, case_id=case_id, pgdr_execution_id=pgdr_result.execution_id,
@@ -371,7 +470,19 @@ async def continue_vehicle_diagnostic(
         execution_id=execution_id, authority=authority,
     )
 
-    _apply_pgdr_case_transition(case_id, pgdr_result, authority)
+    sync_error = _sync_case_with_pgdr_result(
+        case_id=case_id, pgdr_execution_id=pgdr_result.execution_id, pgdr_outcome=pgdr_result.outcome,
+        authority=authority,
+    )
+    if sync_error is not None:
+        return DiagnosticContinueResult(
+            outcome=DiagnosticStartOutcome.CASE_ORCHESTRATION_FAILURE, case_id=case_id,
+            pgdr_execution_id=pgdr_result.execution_id, pgdr_session=pgdr_result.session,
+            pending_questions=pgdr_result.pending_questions, pgdr_artifact_id=pgdr_result.artifact_id,
+            detail=f"PGDR outcome {pgdr_result.outcome!r} was persisted correctly, but Case synchronization "
+                   f"failed: {sync_error.underlying_error}. Call reconcile_case_orchestration(case_id={case_id!r}, "
+                   f"pgdr_execution_id={pgdr_result.execution_id!r}) to safely retry — do not re-invoke PGDR.",
+        )
 
     return DiagnosticContinueResult(
         outcome=pgdr_result.outcome, case_id=case_id, pgdr_execution_id=pgdr_result.execution_id,
@@ -382,41 +493,132 @@ async def continue_vehicle_diagnostic(
 
 # -- internal helpers -------------------------------------------------------
 
-def _apply_pgdr_case_transition(case_id: UUID, pgdr_result: PGDRAdapterResult, authority: AuthorityContext) -> None:
-    """§13/§17/§18: Case.current_execution_id sequencing + status
-    transition, derived from the PGDR outcome. A PGDR_TECHNICAL_FAILURE or
-    CPL_PERSISTENCE_FAILURE deliberately does NOT trigger a Case status
-    write here (module docstring) -- only genuine BLOCKED/COMPLETED
-    domain-observable outcomes do."""
-    if pgdr_result.outcome == PGDRSessionOutcome.BLOCKED:
-        _set_current_execution(case_id, pgdr_result.execution_id)
-        _transition_case(case_id, "WAITING_FOR_USER", authority=authority,
-                          idempotency_key=f"case-transition:{case_id}:WAITING_FOR_USER:{pgdr_result.execution_id}")
-    elif pgdr_result.outcome == PGDRSessionOutcome.COMPLETED:
-        _set_current_execution(case_id, pgdr_result.execution_id)
-        _transition_case(case_id, "RESOLVED", authority=authority,
-                          idempotency_key=f"case-transition:{case_id}:RESOLVED:{pgdr_result.execution_id}")
-    # AUTHORITY_REJECTION/CONFLICT/PGDR_TECHNICAL_FAILURE/CPL_PERSISTENCE_FAILURE:
-    # no Case-level write -- these are adapter/authority-layer outcomes, not
-    # governed domain observations about the Case itself.
+def _sync_case_with_execution(
+    *, case_id: UUID, execution_id: Optional[UUID], target_status: str, authority: AuthorityContext,
+    observed_status_label: str,
+) -> Optional[CaseOrchestrationTransitionError]:
+    """PI-04-VF-01 repair — the single place Case.current_execution_id and
+    the corresponding status transition are written, always together in
+    ONE transaction (reduces, though per §5/§14 of the repair instruction
+    cannot eliminate, the window between the two facts becoming true —
+    a single Postgres statement can still fail mid-flight for reasons
+    outside this code's control, which is exactly why the honest,
+    reconcilable failure path below still exists rather than assuming
+    "one transaction" alone is sufficient).
 
+    Never lets an underlying exception propagate raw (§7 of the repair
+    instruction): any failure is caught and returned (not raised) as a
+    `CaseOrchestrationTransitionError` describing exactly what already-true
+    domain fact could not yet be reflected in the Case.
 
-def _set_current_execution(case_id: UUID, execution_id: Optional[UUID]) -> None:
-    if execution_id is None:
-        return
-    with session_scope() as session:
-        case = session.get(Case, case_id)
-        if case is not None:
-            case.current_execution_id = execution_id
+    General-purpose across every execution-to-Case sync PI-04 performs —
+    VIR admission (IN_PROGRESS) and PGDR (WAITING_FOR_USER/RESOLVED) all
+    share the identical class of defect PI-04-VF-01 identified, so all
+    three are fixed with this one function, not three parallel copies.
+    Also the ONLY place this logic lives — both the normal flow and
+    `reconcile_case_orchestration` call this exact function, so retrying
+    reconciliation can never drift from the original logic."""
+    try:
+        with session_scope() as session:
+            if execution_id is not None:
+                case = session.get(Case, case_id)
+                if case is not None:
+                    case.current_execution_id = execution_id
+            transition_case_status(
+                session, case_id=case_id, new_status=target_status, authority=authority,
+                idempotency_key=f"case-transition:{case_id}:{target_status}:{execution_id}",
+            )
             session.commit()
-
-
-def _transition_case(case_id: UUID, new_status: str, *, authority: AuthorityContext, idempotency_key: str) -> None:
-    with session_scope() as session:
-        transition_case_status(
-            session, case_id=case_id, new_status=new_status, authority=authority, idempotency_key=idempotency_key,
+        return None
+    except Exception as exc:  # noqa: BLE001 — the entire point of this repair: never let this propagate raw
+        return CaseOrchestrationTransitionError(
+            case_id=case_id, pgdr_execution_id=execution_id, observed_pgdr_status=observed_status_label,
+            intended_case_status=target_status, underlying_error=str(exc),
         )
-        session.commit()
+
+
+def _sync_case_with_pgdr_result(
+    *, case_id: UUID, pgdr_execution_id: Optional[UUID], pgdr_outcome: str, authority: AuthorityContext,
+) -> Optional[CaseOrchestrationTransitionError]:
+    """Thin PGDR-outcome-specific wrapper around `_sync_case_with_execution`
+    (the shared, honest-failure sync primitive) — derives the target Case
+    status from a PGDR outcome and delegates. Returns `None` immediately
+    for outcomes the Case doesn't track at all (AUTHORITY_REJECTION/
+    CONFLICT/PGDR_TECHNICAL_FAILURE/CPL_PERSISTENCE_FAILURE — unchanged
+    from the original candidate's own reasoning: these are adapter/
+    authority-layer outcomes, not governed domain observations about the
+    Case)."""
+    if pgdr_outcome == PGDRSessionOutcome.BLOCKED:
+        target_status = "WAITING_FOR_USER"
+    elif pgdr_outcome == PGDRSessionOutcome.COMPLETED:
+        target_status = "RESOLVED"
+    else:
+        return None
+
+    return _sync_case_with_execution(
+        case_id=case_id, execution_id=pgdr_execution_id, target_status=target_status, authority=authority,
+        observed_status_label=pgdr_outcome,
+    )
+
+
+def reconcile_case_orchestration(
+    *, case_id: UUID, pgdr_execution_id: UUID, authority: AuthorityContext,
+) -> ReconciliationResult:
+    """PI-04-VF-01 repair: safely retries Case synchronization after a
+    `CASE_ORCHESTRATION_FAILURE`, using the ALREADY-PERSISTED PGDR
+    `RunnerExecution` row as the sole source of truth — never re-invokes
+    PGDR (`SessionController` is not even a parameter here), never
+    fabricates an answer, never creates a new Case or a new execution
+    (§10/§11/§12 of the repair instruction).
+
+    Idempotent (§18): re-derives the target Case status from the
+    execution's own *current* persisted status every time it is called,
+    and delegates to the same `_sync_case_with_pgdr_result` the normal
+    flow uses — `transition_case_status`'s own existing idempotency
+    (same idempotency_key -> NO_CHANGE/replay, confirmed unchanged from
+    B5) means calling this repeatedly after a successful reconciliation
+    is a safe no-op, not a duplicate transition."""
+    with session_scope() as session:
+        execution = session.get(RunnerExecution, pgdr_execution_id)
+        if execution is None or execution.case_id != case_id:
+            return ReconciliationResult(
+                outcome=ReconciliationOutcome.EXECUTION_NOT_FOUND, case_id=case_id,
+                pgdr_execution_id=pgdr_execution_id,
+                detail=f"no PGDR RunnerExecution {pgdr_execution_id} found under case {case_id}",
+            )
+        observed_status = execution.execution_status
+        artifact = (
+            session.query(RunnerArtifact)
+            .filter(RunnerArtifact.execution_id == pgdr_execution_id)
+            .order_by(desc(RunnerArtifact.created_at))
+            .first()
+        )
+        artifact_id = artifact.artifact_id if artifact is not None else None
+
+    if observed_status == "BLOCKED":
+        pgdr_outcome = PGDRSessionOutcome.BLOCKED
+    elif observed_status == "COMPLETED":
+        pgdr_outcome = PGDRSessionOutcome.COMPLETED
+    else:
+        return ReconciliationResult(
+            outcome=ReconciliationOutcome.NOTHING_TO_RECONCILE, case_id=case_id,
+            pgdr_execution_id=pgdr_execution_id, pgdr_artifact_id=artifact_id, observed_pgdr_status=observed_status,
+            detail=f"execution_status {observed_status!r} requires no Case-level write",
+        )
+
+    sync_error = _sync_case_with_pgdr_result(
+        case_id=case_id, pgdr_execution_id=pgdr_execution_id, pgdr_outcome=pgdr_outcome, authority=authority,
+    )
+    if sync_error is not None:
+        return ReconciliationResult(
+            outcome=ReconciliationOutcome.CASE_ORCHESTRATION_FAILURE, case_id=case_id,
+            pgdr_execution_id=pgdr_execution_id, pgdr_artifact_id=artifact_id, observed_pgdr_status=observed_status,
+            detail=sync_error.underlying_error,
+        )
+    return ReconciliationResult(
+        outcome=ReconciliationOutcome.RECONCILED, case_id=case_id, pgdr_execution_id=pgdr_execution_id,
+        pgdr_artifact_id=artifact_id, observed_pgdr_status=observed_status,
+    )
 
 
 def _map_operation_outcome(outcome: str) -> str:
