@@ -29,12 +29,14 @@ test('K. process-restart continuation surfaces the known limitation honestly, ne
     })
   })
 
-  const select = page.locator('select#answer')
-  const input = page.locator('input#answer')
-  if (await select.count()) {
-    await select.selectOption({ index: 1 })
+  const answer = page.locator('#answer')
+  await answer.waitFor({ state: 'attached' })
+  await expect(answer).toBeEnabled()
+  const tagName = await answer.evaluate((el) => el.tagName.toLowerCase())
+  if (tagName === 'select') {
+    await answer.selectOption({ index: 1 })
   } else {
-    await input.fill('yes')
+    await answer.fill('yes')
   }
   await page.getByRole('button', { name: 'Submit answer' }).click()
 

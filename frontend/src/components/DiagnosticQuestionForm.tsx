@@ -32,6 +32,16 @@ export function DiagnosticQuestionForm({
         question_id: question.question_id,
         value,
       })
+      // PI-06-VF-04 repair: reset to 'ready' on the success path too --
+      // previously only the catch block did this, so a successful
+      // submission left the form permanently 'submitting' (and therefore
+      // permanently disabled) if this component instance were ever reused
+      // for a later question. Combined with the caller now keying this
+      // component by question_id (a genuinely fresh mount per question,
+      // so this reset is belt-and-suspenders rather than load-bearing on
+      // its own), every new question is guaranteed interactable.
+      setStatus('ready')
+      setValue('')
       onAnswered(result)
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError('UNEXPECTED', 'Something went wrong.', 500))

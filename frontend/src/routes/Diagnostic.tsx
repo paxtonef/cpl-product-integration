@@ -25,8 +25,14 @@ function DiagnosticInner({ caseId }: { caseId: string }) {
   }
 
   if (current?.blocked && current.execution_id && current.pending_questions.length > 0) {
+    // PI-06-VF-04 repair: keyed by question_id (the stable identity PI-05
+    // actually returns per question, confirmed against DiagnosticQuestionSchema)
+    // so React mounts a genuinely fresh component instance for every new
+    // question rather than reusing the previous one's stale internal
+    // status/disabled state.
     return (
       <DiagnosticQuestionForm
+        key={current.pending_questions[0].question_id}
         caseId={caseId}
         executionId={current.execution_id}
         question={current.pending_questions[0]}
@@ -43,8 +49,24 @@ export function Diagnostic() {
   if (!caseId) return null
 
   return (
-    <JourneyShell caseId={caseId} expectedScreens={['case-hub', 'diagnostic-question']}>
+    <JourneyShell caseId={caseId} expectedScreens={['case-hub', 'diagnostic-question', 'refusal']}>
       {(state) => {
+        if (state.screen === 'refusal') {
+          // PI-06-VF-05 repair: case_status WAITING_FOR_EXTERNAL_INFORMATION
+          // means PI-02 already refused the handoff (confirmed against the
+          // real backend) -- show the truthful refusal state directly,
+          // never a clarification form, and never re-attempt the
+          // diagnostic start that already produced this result. No
+          // per-refusal detail text is retrievable after the fact (no
+          // backend endpoint persists it separately -- confirmed; not
+          // invented here), so RefusalPanel renders its own truthful
+          // generic message.
+          return (
+            <main>
+              <RefusalPanel />
+            </main>
+          )
+        }
         if (!state.currentPgdrExecutionId) {
           return (
             <main>
