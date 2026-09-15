@@ -172,6 +172,11 @@ class DiagnosticStartResult:
     pending_questions: list = field(default_factory=list)
     pgdr_artifact_id: Optional[UUID] = None
     detail: Optional[str] = None
+    primary_diagnostic_media_reference: Optional[str] = None
+    """Block A repair (VIR_PHOTO_PGDR_BUILD_DECOMPOSITION_v1, §A): echoed
+    from PGDRAdapterResult — the explicit typed diagnostic-input surface,
+    not governance metadata. See session_adapter.py's PGDRAdapterResult
+    docstring for the full repair rationale."""
 
 
 @dataclass
@@ -357,11 +362,14 @@ async def start_vehicle_diagnostic(
     `consent` are USER-ORIGINATED (§6's boundary — never derived from VIR
     data anywhere in this function).
 
-    `primary_diagnostic_media_reference` (Block A — VIR_PHOTO_PGDR_BUILD_
-    DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, transported through
-    to PI-03's own governed-execution provenance (see session_adapter.py's
-    start_pgdr_session docstring) — not Evidence, not interpreted here,
-    not merged into `initial_complaint`. PGDR itself is untouched by this
+    `primary_diagnostic_media_reference` (Block A, REPAIRED — VIR_PHOTO_
+    PGDR_BUILD_DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, transported
+    through to PI-03's own explicit, typed `PGDRAdapterResult.primary_
+    diagnostic_media_reference` (NOT execution_purpose/governance
+    metadata — see session_adapter.py's start_pgdr_session docstring for
+    the full repair rationale) and echoed onto this function's own
+    `DiagnosticStartResult`. Not Evidence, not interpreted here, not
+    merged into `initial_complaint`. PGDR itself is untouched by this
     parameter for Block A; no Observation/Identification/Confidence/
     Evidence is produced from it in this function."""
     with session_scope() as session:
@@ -449,12 +457,14 @@ async def start_vehicle_diagnostic(
             detail=f"PGDR outcome {pgdr_result.outcome!r} was persisted correctly, but Case synchronization "
                    f"failed: {sync_error.underlying_error}. Call reconcile_case_orchestration(case_id={case_id!r}, "
                    f"pgdr_execution_id={pgdr_result.execution_id!r}) to safely retry — do not re-invoke PGDR.",
+            primary_diagnostic_media_reference=pgdr_result.primary_diagnostic_media_reference,
         )
 
     return DiagnosticStartResult(
         outcome=pgdr_result.outcome, case_id=case_id, pgdr_execution_id=pgdr_result.execution_id,
         pgdr_session=pgdr_result.session, pending_questions=pgdr_result.pending_questions,
         pgdr_artifact_id=pgdr_result.artifact_id, detail=pgdr_result.detail,
+        primary_diagnostic_media_reference=pgdr_result.primary_diagnostic_media_reference,
     )
 
 

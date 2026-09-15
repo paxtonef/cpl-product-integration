@@ -71,17 +71,38 @@ class TestBlockAAcceptance:
             response = client.post(f"/cases/{case_id}/diagnostics", json={})
         assert response.status_code == 422
 
-    def test_4_media_reference_reaches_pi03_execution_provenance(self):
-        """AC4 (the core Block A stop condition): the primary diagnostic
-        media reference reaches PI-03's own governed-execution provenance
-        (execution_purpose) -- confirmed by direct inspection of the real
-        RunnerGovernanceDecision recorded for this execution's admission."""
+    def test_4_media_reference_reaches_explicit_diagnostic_input_boundary(self):
+        """AC4 (REPAIRED — the corrected Block A stop condition): the
+        primary diagnostic media reference reaches the PGDR boundary as an
+        explicit, typed diagnostic-input value, echoed all the way to the
+        API response -- NOT recovered by parsing governance metadata
+        (RunnerGovernanceDecision.new_value/execution_purpose). This test
+        makes no database query at all; a pure HTTP-level round trip is
+        sufficient proof the value survived intact through the whole PI
+        chain (API -> orchestration -> PI-03 adapter -> PGDRAdapterResult
+        -> DiagnosticStartResult -> DiagnosticResponse)."""
+        case_id = _register_and_resolve()
+        ref = f"media-ref-boundary-{uuid.uuid4().hex[:8]}"
+        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+            response = client.post(
+                f"/cases/{case_id}/diagnostics",
+                json={"primary_diagnostic_media_reference": ref},
+            )
+        assert response.status_code in (200, 201), response.text
+        body = response.json()
+        assert body["primary_diagnostic_media_reference"] == ref
+
+    def test_4b_execution_purpose_no_longer_carries_the_media_reference(self):
+        """Explicit negative proof of the repair: execution_purpose (the
+        governance/audit-trail field) does NOT contain the media
+        reference -- it remains execution/governance metadata only,
+        exactly as it behaved before Block A ever existed."""
         from app.db.engine import SessionLocal
         from app.cpl.models.runner_execution import RunnerExecution
         from app.cpl.models.runner_governance_decision import RunnerGovernanceDecision
 
         case_id = _register_and_resolve()
-        ref = f"media-ref-provenance-{uuid.uuid4().hex[:8]}"
+        ref = f"media-ref-not-in-governance-{uuid.uuid4().hex[:8]}"
         with httpx.Client(base_url=BASE_URL, timeout=30) as client:
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
@@ -98,6 +119,7 @@ class TestBlockAAcceptance:
                 .first()
             )
             assert execution is not None
+            assert ref not in (execution.execution_purpose or "")
             admission_decision = (
                 session.query(RunnerGovernanceDecision)
                 .filter(
@@ -109,7 +131,8 @@ class TestBlockAAcceptance:
             )
             assert admission_decision is not None
             purpose = admission_decision.new_value.get("execution_purpose", "")
-            assert f"primary_diagnostic_media_reference={ref}" in purpose
+            assert ref not in purpose
+            assert "primary_diagnostic_media_reference" not in purpose
         finally:
             session.close()
 

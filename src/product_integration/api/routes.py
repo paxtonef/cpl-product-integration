@@ -353,6 +353,7 @@ def _diagnostic_response(result, case_id: UUID) -> DiagnosticResponse:
         outcome=result.outcome, case_id=case_id, execution_id=result.pgdr_execution_id, blocked=blocked, terminal=terminal,
         pending_questions=[_to_question_schema(q) for q in (result.pending_questions or [])],
         artifact_id=result.pgdr_artifact_id, detail=result.detail,
+        primary_diagnostic_media_reference=getattr(result, "primary_diagnostic_media_reference", None),
     )
 
 
@@ -364,11 +365,16 @@ async def start_diagnostic_route(
     session_controller = SessionController()
     result = await start_vehicle_diagnostic(
         case_id=case_id, session_controller=session_controller,
-        # Block A: complaint_text is now optional; PGDR's own InitialComplaint.
-        # free_text remains a required str (PGDR itself is untouched by Block
-        # A) -- an empty string is a valid, honest str when only
-        # primary_diagnostic_media_reference was provided, not a fabricated
-        # complaint.
+        # Block A repair note: complaint_text is optional; PGDR's own
+        # InitialComplaint.free_text remains a required str (PGDR itself
+        # is untouched by Block A). Falling back to "" here is a
+        # TEMPORARY COMPATIBILITY MECHANISM for Block A only — it exists
+        # solely because PGDR has no other entry point yet, not because
+        # an empty complaint is the canonical Photo-First input model.
+        # Block B (Dashboard Interpretation) is expected to replace this
+        # with a real PGDR-side entry point that accepts primary
+        # diagnostic media directly, at which point this fallback should
+        # be removed rather than extended.
         initial_complaint=InitialComplaint(free_text=body.complaint_text or ""), user_context=UserContext(),
         consent=Consent(media_analysis_allowed=body.consent_media_analysis_allowed, report_storage_allowed=body.consent_report_storage_allowed),
         authority=authority,

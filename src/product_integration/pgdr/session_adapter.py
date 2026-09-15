@@ -122,6 +122,20 @@ class PGDRAdapterResult:
     pgdr_session_state: Optional[str] = None
     artifact_id: Optional[UUID] = None
     detail: Optional[str] = None
+    primary_diagnostic_media_reference: Optional[str] = None
+    """Block A repair (VIR_PHOTO_PGDR_BUILD_DECOMPOSITION_v1, §A): the
+    PRIMARY DIAGNOSTIC MEDIA reference, echoed back exactly as received,
+    right at the point this adapter would call into PGDR. This is
+    PRODUCT/DIAGNOSTIC INPUT, deliberately NOT carried via
+    execution_purpose / RunnerGovernanceDecision (that mechanism is
+    execution/governance metadata, not a product-input transport — the
+    original Block A implementation, commit 82deb069, misused it this
+    way and has been repaired). PGDRAdapterResult is this adapter's own
+    plain in-memory return value, not a persisted or governed CPL
+    structure, so extending it introduces no new persistence and does
+    not touch CPL. This is the explicit typed surface Block B will read
+    from once it exists — Block A itself does not act on the value
+    beyond making it reach this boundary intact."""
 
 
 def ensure_pgdr_report_schema_registered(session) -> None:
@@ -273,28 +287,31 @@ def start_pgdr_session(
     column, table, or schema element is introduced; `execution_purpose`
     is simply given a structured, parseable value).
 
-    `primary_diagnostic_media_reference` (Block A — VIR_PHOTO_PGDR_BUILD_
-    DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, not Evidence. This
-    function transports the reference exactly as far as this governed
-    execution's own provenance — the same `execution_purpose` mechanism
-    already used for `vir_artifact_id` above, extended the same way, no
-    new CPL column/table. It is NOT passed into `request` (PGDR's own
-    `PreGarageDiagnosticRequest` has no slot for it, and PGDR itself is
-    out of scope for Block A — see the module docstring's "Session-object
-    custody" note for the same discipline applied here: this adapter does
-    not invent a PGDR-side capability that doesn't exist). No Observation,
-    Identification, Confidence, or Evidence is produced from it here —
-    that is Block B's responsibility. The existing `Q-EVI-002` media-
-    answer path (`LEGACY_MEDIA_SEMANTICS_TO_ALIGN`, per v1) is untouched
-    and not reused as a foundation for this parameter."""
+    `primary_diagnostic_media_reference` (Block A, REPAIRED — VIR_PHOTO_
+    PGDR_BUILD_DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, not
+    Evidence, and deliberately NOT execution/governance metadata. The
+    original Block A implementation (commit 82deb069) carried this value
+    inside `execution_purpose`/`RunnerGovernanceDecision.new_value` —
+    misusing a governance/audit-trail mechanism as product-input
+    transport, requiring later string-parsing to recover a typed value.
+    That has been removed. This parameter now reaches the PGDR boundary
+    (the point in this function immediately before `session_controller.
+    start(request)` is called) as a plain, explicit, typed local value,
+    untouched, and is echoed back on `PGDRAdapterResult.primary_
+    diagnostic_media_reference` — a plain in-memory return value this
+    adapter already owns, not a persisted or governed CPL structure. It
+    is NOT passed into `request` (PGDR's own `PreGarageDiagnosticRequest`
+    has no slot for it, and PGDR itself is out of scope for Block A — see
+    the module docstring's "Session-object custody" note for the same
+    discipline applied here: this adapter does not invent a PGDR-side
+    capability that doesn't exist). No Observation, Identification,
+    Confidence, or Evidence is produced from it here — that is Block B's
+    responsibility. The existing `Q-EVI-002` media-answer path (`LEGACY_
+    MEDIA_SEMANTICS_TO_ALIGN`, per v1) is untouched and not reused as a
+    foundation for this parameter."""
     execution_purpose = "pgdr_diagnostic_session"
-    purpose_suffixes = []
     if vir_artifact_id is not None:
-        purpose_suffixes.append(f"vir_artifact_id={vir_artifact_id}")
-    if primary_diagnostic_media_reference is not None:
-        purpose_suffixes.append(f"primary_diagnostic_media_reference={primary_diagnostic_media_reference}")
-    if purpose_suffixes:
-        execution_purpose = "pgdr_diagnostic_session:" + ":".join(purpose_suffixes)
+        execution_purpose = f"pgdr_diagnostic_session:vir_artifact_id={vir_artifact_id}"
 
     try:
         execution_id, was_replay = _admit_and_prepare(
@@ -309,21 +326,36 @@ def start_pgdr_session(
         return PGDRAdapterResult(outcome=mapped_outcome, detail=f"admission outcome was {rejected.outcome!r}: {rejected.detail}")
 
     if was_replay:
-        return _existing_terminal_or_blocked_result(execution_id)
+        result = _existing_terminal_or_blocked_result(execution_id)
+        result.primary_diagnostic_media_reference = primary_diagnostic_media_reference
+        return result
 
     # No open DB transaction during this call — SessionController.start()
     # is a pure in-process, synchronous computation (confirmed: no I/O in
     # PGDR's own source), but the discipline is identical in spirit to
     # PI-01's "no transaction held open across an external wait" rule.
+    #
+    # ---- PGDR boundary ----
+    # primary_diagnostic_media_reference is a plain, explicit, typed local
+    # value at this exact point, immediately before the only call PGDR
+    # itself is made from. Block A does not pass it into `request` (no
+    # slot exists on PreGarageDiagnosticRequest, and PGDR is out of scope
+    # for this block) — it is echoed onto the returned PGDRAdapterResult
+    # below instead, so it reaches this boundary as explicit diagnostic
+    # input without requiring PGDR, CPL, or governance-metadata changes.
     try:
         pgdr_session = session_controller.start(request)
     except Exception as exc:  # noqa: BLE001 — a genuine PGDR-side failure
-        return _mark_failed(
+        result = _mark_failed(
             execution_id, detail=f"PGDR start() failed: {exc}", authority=authority,
             outcome=PGDRSessionOutcome.PGDR_TECHNICAL_FAILURE,
         )
+        result.primary_diagnostic_media_reference = primary_diagnostic_media_reference
+        return result
 
-    return _persist_current_state(execution_id=execution_id, pgdr_session=pgdr_session, authority=authority)
+    result = _persist_current_state(execution_id=execution_id, pgdr_session=pgdr_session, authority=authority)
+    result.primary_diagnostic_media_reference = primary_diagnostic_media_reference
+    return result
 
 
 def continue_pgdr_session(
