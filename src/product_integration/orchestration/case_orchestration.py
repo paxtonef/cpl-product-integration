@@ -350,11 +350,20 @@ async def start_vehicle_diagnostic(
     consent: Consent,
     authority: AuthorityContext,
     resolver_version: str = "unknown",
+    primary_diagnostic_media_reference: Optional[str] = None,
 ) -> DiagnosticStartResult:
     """§10/§15/§16: start PGDR under the same Case, only after the VIR
     identity handoff is admissible. `initial_complaint`/`user_context`/
     `consent` are USER-ORIGINATED (§6's boundary — never derived from VIR
-    data anywhere in this function)."""
+    data anywhere in this function).
+
+    `primary_diagnostic_media_reference` (Block A — VIR_PHOTO_PGDR_BUILD_
+    DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, transported through
+    to PI-03's own governed-execution provenance (see session_adapter.py's
+    start_pgdr_session docstring) — not Evidence, not interpreted here,
+    not merged into `initial_complaint`. PGDR itself is untouched by this
+    parameter for Block A; no Observation/Identification/Confidence/
+    Evidence is produced from it in this function."""
     with session_scope() as session:
         case = session.get(Case, case_id)
         if case is None:
@@ -415,6 +424,7 @@ async def start_vehicle_diagnostic(
     pgdr_result: PGDRAdapterResult = start_pgdr_session(
         session_controller=session_controller, request=request, case_id=case_id, asset_id=asset_id,
         vir_artifact_id=vir_artifact_id, authority=authority, resolver_version=resolver_version,
+        primary_diagnostic_media_reference=primary_diagnostic_media_reference,
     )
 
     sync_error = _sync_case_with_pgdr_result(

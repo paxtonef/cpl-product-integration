@@ -364,9 +364,15 @@ async def start_diagnostic_route(
     session_controller = SessionController()
     result = await start_vehicle_diagnostic(
         case_id=case_id, session_controller=session_controller,
-        initial_complaint=InitialComplaint(free_text=body.complaint_text), user_context=UserContext(),
+        # Block A: complaint_text is now optional; PGDR's own InitialComplaint.
+        # free_text remains a required str (PGDR itself is untouched by Block
+        # A) -- an empty string is a valid, honest str when only
+        # primary_diagnostic_media_reference was provided, not a fabricated
+        # complaint.
+        initial_complaint=InitialComplaint(free_text=body.complaint_text or ""), user_context=UserContext(),
         consent=Consent(media_analysis_allowed=body.consent_media_analysis_allowed, report_storage_allowed=body.consent_report_storage_allowed),
         authority=authority,
+        primary_diagnostic_media_reference=body.primary_diagnostic_media_reference,
     )
     if result.pgdr_execution_id is not None and result.pgdr_session is not None:
         registry.put(result.pgdr_execution_id, session_controller, result.pgdr_session)

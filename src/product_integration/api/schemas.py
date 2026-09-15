@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # -- contacts -----------------------------------------------------------
@@ -92,9 +92,25 @@ class SubmitClarificationRequest(BaseModel):
 # -- diagnostics (PGDR) -------------------------------------------------------------
 
 class StartDiagnosticRequest(BaseModel):
-    complaint_text: str
+    """Block A — VIR_PHOTO_PGDR_BUILD_DECOMPOSITION_v1, §A: the primary
+    dashboard photo is PRIMARY DIAGNOSTIC MEDIA, not Evidence -- a
+    distinct acquisition path from the existing in-question
+    answer_type=media_upload mechanism (Q-EVI-002, classified
+    LEGACY_MEDIA_SEMANTICS_TO_ALIGN, untouched here and not reused as a
+    foundation for this field). complaint_text is now optional; at least
+    one of complaint_text or primary_diagnostic_media_reference must be
+    provided (enforced below) so a diagnostic always starts from some
+    real input."""
+    complaint_text: Optional[str] = None
+    primary_diagnostic_media_reference: Optional[str] = None
     consent_media_analysis_allowed: bool = False
     consent_report_storage_allowed: bool = False
+
+    @model_validator(mode="after")
+    def _require_text_or_media(self) -> "StartDiagnosticRequest":
+        if not (self.complaint_text and self.complaint_text.strip()) and not self.primary_diagnostic_media_reference:
+            raise ValueError("Provide complaint_text, primary_diagnostic_media_reference, or both.")
+        return self
 
 
 class SubmitAnswerRequest(BaseModel):

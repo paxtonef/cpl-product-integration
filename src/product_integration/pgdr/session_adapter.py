@@ -259,6 +259,7 @@ def start_pgdr_session(
     vir_artifact_id: Optional[UUID],
     authority: AuthorityContext,
     resolver_version: str = "unknown",
+    primary_diagnostic_media_reference: Optional[str] = None,
 ) -> PGDRAdapterResult:
     """Admits one governed CPL RunnerExecution for the whole bounded PGDR
     session (§12 — never one per question/answer turn) and drives the
@@ -270,10 +271,30 @@ def start_pgdr_session(
     `new_value` JSONB already includes `execution_purpose` verbatim,
     confirmed by direct source read of `admit_execution` — no new CPL
     column, table, or schema element is introduced; `execution_purpose`
-    is simply given a structured, parseable value)."""
+    is simply given a structured, parseable value).
+
+    `primary_diagnostic_media_reference` (Block A — VIR_PHOTO_PGDR_BUILD_
+    DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, not Evidence. This
+    function transports the reference exactly as far as this governed
+    execution's own provenance — the same `execution_purpose` mechanism
+    already used for `vir_artifact_id` above, extended the same way, no
+    new CPL column/table. It is NOT passed into `request` (PGDR's own
+    `PreGarageDiagnosticRequest` has no slot for it, and PGDR itself is
+    out of scope for Block A — see the module docstring's "Session-object
+    custody" note for the same discipline applied here: this adapter does
+    not invent a PGDR-side capability that doesn't exist). No Observation,
+    Identification, Confidence, or Evidence is produced from it here —
+    that is Block B's responsibility. The existing `Q-EVI-002` media-
+    answer path (`LEGACY_MEDIA_SEMANTICS_TO_ALIGN`, per v1) is untouched
+    and not reused as a foundation for this parameter."""
     execution_purpose = "pgdr_diagnostic_session"
+    purpose_suffixes = []
     if vir_artifact_id is not None:
-        execution_purpose = f"pgdr_diagnostic_session:vir_artifact_id={vir_artifact_id}"
+        purpose_suffixes.append(f"vir_artifact_id={vir_artifact_id}")
+    if primary_diagnostic_media_reference is not None:
+        purpose_suffixes.append(f"primary_diagnostic_media_reference={primary_diagnostic_media_reference}")
+    if purpose_suffixes:
+        execution_purpose = "pgdr_diagnostic_session:" + ":".join(purpose_suffixes)
 
     try:
         execution_id, was_replay = _admit_and_prepare(
