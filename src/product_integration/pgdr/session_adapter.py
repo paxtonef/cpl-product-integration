@@ -287,28 +287,25 @@ def start_pgdr_session(
     column, table, or schema element is introduced; `execution_purpose`
     is simply given a structured, parseable value).
 
-    `primary_diagnostic_media_reference` (Block A, REPAIRED — VIR_PHOTO_
-    PGDR_BUILD_DECOMPOSITION_v1, §A): PRIMARY DIAGNOSTIC MEDIA, not
-    Evidence, and deliberately NOT execution/governance metadata. The
-    original Block A implementation (commit 82deb069) carried this value
-    inside `execution_purpose`/`RunnerGovernanceDecision.new_value` —
-    misusing a governance/audit-trail mechanism as product-input
-    transport, requiring later string-parsing to recover a typed value.
-    That has been removed. This parameter now reaches the PGDR boundary
-    (the point in this function immediately before `session_controller.
-    start(request)` is called) as a plain, explicit, typed local value,
-    untouched, and is echoed back on `PGDRAdapterResult.primary_
-    diagnostic_media_reference` — a plain in-memory return value this
-    adapter already owns, not a persisted or governed CPL structure. It
-    is NOT passed into `request` (PGDR's own `PreGarageDiagnosticRequest`
-    has no slot for it, and PGDR itself is out of scope for Block A — see
-    the module docstring's "Session-object custody" note for the same
-    discipline applied here: this adapter does not invent a PGDR-side
-    capability that doesn't exist). No Observation, Identification,
-    Confidence, or Evidence is produced from it here — that is Block B's
-    responsibility. The existing `Q-EVI-002` media-answer path (`LEGACY_
-    MEDIA_SEMANTICS_TO_ALIGN`, per v1) is untouched and not reused as a
-    foundation for this parameter."""
+    `primary_diagnostic_media_reference` (Block A, REPAIRED, then Block B1
+    — VIR_PHOTO_PGDR_BUILD_DECOMPOSITION_v1 §A, PGDR_BLOCK_B1_PRIMARY_
+    DIAGNOSTIC_MEDIA_CONTRACT_v0): PRIMARY DIAGNOSTIC MEDIA, deliberately
+    NOT execution/governance metadata. As of Block B1, the caller
+    (case_orchestration.py's start_vehicle_diagnostic) already constructs
+    `request.primary_diagnostic_media` (PGDR's own typed field, added in
+    B1) from this same value BEFORE calling this function — so the value
+    genuinely reaches PGDR's request/session now, not merely this
+    adapter's own result object. This parameter is kept here in parallel
+    so it can still be echoed on `PGDRAdapterResult.primary_diagnostic_
+    media_reference` (TEMPORARY_BLOCK_A_OBSERVABILITY_SURFACE, per B1
+    §13 — not removed automatically). It is NOT passed into `request`
+    from *this* function (the caller already did that); this function
+    only echoes it back. No Observation, Identification, Confidence, or
+    Evidence is produced from it here or in PGDR's own start() for B1 —
+    PGDR only stores the value, per Block B1's own scope (SessionController
+    does not invoke DashboardInterpretationPort). The existing `Q-EVI-002`
+    media-answer path (`LEGACY_MEDIA_SEMANTICS_TO_ALIGN`, per v1) is
+    untouched and not reused as a foundation for this parameter."""
     execution_purpose = "pgdr_diagnostic_session"
     if vir_artifact_id is not None:
         execution_purpose = f"pgdr_diagnostic_session:vir_artifact_id={vir_artifact_id}"

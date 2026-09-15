@@ -112,6 +112,7 @@ class TestBlockAAcceptance:
 
         session = SessionLocal()
         try:
+            session.expire_all()  # avoid a pooled connection's stale read-snapshot
             execution = (
                 session.query(RunnerExecution)
                 .filter(RunnerExecution.case_id == uuid.UUID(case_id), RunnerExecution.runner_type == "PGDR")

@@ -134,11 +134,15 @@ class DiagnosticResponse(BaseModel):
     artifact_id: Optional[UUID] = None
     detail: Optional[str] = None
     primary_diagnostic_media_reference: Optional[str] = None
-    """Block A repair (VIR_PHOTO_PGDR_BUILD_DECOMPOSITION_v1, §A): echoes
-    back the caller's own primary diagnostic media reference, confirming
-    it reached the full PI chain up to this response boundary as an
-    explicit typed value — not derived from or requiring any governance-
-    metadata inspection."""
+    """TEMPORARY_BLOCK_A_OBSERVABILITY_SURFACE (Block A repair, carried
+    forward unchanged by Block B1 per B1 §13 — not removed automatically).
+    Echoes back the caller's own primary diagnostic media reference for
+    observability/testing. As of Block B1, PGDR itself also independently
+    receives the same value through its own typed request field
+    (PreGarageDiagnosticRequest.primary_diagnostic_media) — this response
+    field is not PGDR's authoritative record of it, only a convenience
+    echo. Whether to remove this field is deferred until the real
+    interpretation path exists."""
 
 
 # -- execution status / case status ------------------------------------------

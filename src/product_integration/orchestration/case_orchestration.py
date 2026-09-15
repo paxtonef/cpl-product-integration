@@ -81,6 +81,7 @@ from app.cpl.models.runner_artifact import RunnerArtifact
 from app.cpl.models.runner_execution import RunnerExecution
 from app.db.engine import session_scope
 
+from pgdr.domain.media import PrimaryDiagnosticMedia
 from pgdr.models import Answer, Consent, InitialComplaint, PreGarageDiagnosticRequest, UserContext
 from pgdr.session_controller import SessionController
 from pgdr.models import DiagnosticSession
@@ -427,6 +428,17 @@ async def start_vehicle_diagnostic(
     request = PreGarageDiagnosticRequest(
         request_id=f"PI04-{case_id}", vehicle_identity_context=vehicle_identity_context,
         initial_complaint=initial_complaint, user_context=user_context, consent=consent,
+        # Block B1 (PGDR_BLOCK_B1_PRIMARY_DIAGNOSTIC_MEDIA_CONTRACT_v0): the
+        # reference now reaches PGDR's own typed request surface directly,
+        # replacing Block A's stop point (which only echoed the value back
+        # through PI's own result objects without ever constructing PGDR's
+        # PrimaryDiagnosticMedia). No interpretation occurs from this --
+        # SessionController stores it on the case's request but never acts
+        # on it (Block B1's own scope, confirmed by PGDR-side tests).
+        primary_diagnostic_media=(
+            PrimaryDiagnosticMedia(reference=primary_diagnostic_media_reference)
+            if primary_diagnostic_media_reference is not None else None
+        ),
     )
 
     pgdr_result: PGDRAdapterResult = start_pgdr_session(

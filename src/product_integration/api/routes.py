@@ -368,7 +368,9 @@ async def start_diagnostic_route(
         # Block A repair note: complaint_text is optional; PGDR's own
         # InitialComplaint.free_text remains a required str (PGDR itself
         # is untouched by Block A). Falling back to "" here is a
-        # TEMPORARY COMPATIBILITY MECHANISM for Block A only — it exists
+        # TEMPORARY_COMPATIBILITY_MECHANISM (Block A; unchanged by Block
+        # B1 per B1 §14 — not redesigned, not promoted to canonical). It
+        # exists
         # solely because PGDR has no other entry point yet, not because
         # an empty complaint is the canonical Photo-First input model.
         # Block B (Dashboard Interpretation) is expected to replace this
