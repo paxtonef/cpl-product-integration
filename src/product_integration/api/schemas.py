@@ -124,6 +124,13 @@ class DiagnosticQuestionSchema(BaseModel):
     choices: Optional[list[str]] = None
 
 
+class MediaUploadResponse(BaseModel):
+    """Block B1.5 — the opaque, server-generated identifier a client uses
+    as primary_diagnostic_media_reference on a subsequent diagnostic-start
+    call. Never a filesystem path, never caller-influenced."""
+    media_id: str
+
+
 class DiagnosticResponse(BaseModel):
     outcome: str
     case_id: Optional[UUID] = None

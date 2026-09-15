@@ -20,6 +20,7 @@ from app.cpl.cases.authority import CaseAuthority
 from app.cpl.runners.authority import RunnerAuthority
 
 from product_integration.api.registry import PGDRSessionRegistry, default_registry
+from product_integration.media.storage import LocalMediaStorage
 from product_integration.vir.client import VIRClient
 
 # No authentication/authorization platform exists in the product baseline
@@ -65,3 +66,16 @@ def get_vir_client(http_client: httpx.AsyncClient = Depends(get_vir_http_client)
 
 def get_pgdr_registry() -> PGDRSessionRegistry:
     return default_registry
+
+
+# Block B1.5 -- a single, process-local, fixed base directory. Overridable
+# in tests (app.dependency_overrides) the same way VIR's transport is, but
+# never per-request or per-caller -- the directory itself is a deployment
+# detail, not something any request body ever influences.
+import os as _os
+_MEDIA_STORAGE_DIR = _os.environ.get("PI05_MEDIA_STORAGE_DIR", "/tmp/pi05-media-storage")
+_default_media_storage = LocalMediaStorage(_MEDIA_STORAGE_DIR)
+
+
+def get_media_storage() -> LocalMediaStorage:
+    return _default_media_storage

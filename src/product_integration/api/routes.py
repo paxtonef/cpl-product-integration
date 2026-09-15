@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy import desc
 
 from app.cpl.identity.authority import AuthorityContext, AuthorityDeniedError
@@ -53,7 +53,8 @@ from product_integration.orchestration.case_orchestration import _sync_case_with
 from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.vir.client import VIRClient
 
-from product_integration.api.deps import get_authority, get_pgdr_registry, get_vir_client
+from product_integration.api.deps import get_authority, get_media_storage, get_pgdr_registry, get_vir_client
+from product_integration.media.storage import LocalMediaStorage, MediaValidationError
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
 from product_integration.api.registry import PGDRSessionRegistry
 from product_integration.api.schemas import (
@@ -67,6 +68,7 @@ from product_integration.api.schemas import (
     DiagnosticResponse,
     ExecutionStatusResponse,
     HistoryExecutionEntry,
+    MediaUploadResponse,
     RegisterVehicleRequest,
     RegisterVehicleResponse,
     StartCaseRequest,
@@ -355,6 +357,28 @@ def _diagnostic_response(result, case_id: UUID) -> DiagnosticResponse:
         artifact_id=result.pgdr_artifact_id, detail=result.detail,
         primary_diagnostic_media_reference=getattr(result, "primary_diagnostic_media_reference", None),
     )
+
+
+@router.post("/media", response_model=MediaUploadResponse, status_code=201)
+async def upload_media_route(
+    file: UploadFile = File(...),
+    media_storage: LocalMediaStorage = Depends(get_media_storage),
+) -> MediaUploadResponse:
+    """Block B1.5 — the real media-ingress boundary. Accepts an actual
+    uploaded image (multipart/form-data), never an arbitrary string
+    pretending one exists. `media_id` returned here is the only value a
+    client subsequently uses as StartDiagnosticRequest.primary_
+    diagnostic_media_reference -- always opaque, always server-generated,
+    never a filesystem path or anything the client could construct
+    itself. This endpoint is intentionally the same one a future mobile
+    client would call (real HTTP multipart upload) -- not a desktop-
+    specific filesystem mechanism."""
+    content = await file.read()
+    try:
+        media_id = media_storage.store(content, file.content_type or "")
+    except MediaValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MediaUploadResponse(media_id=media_id)
 
 
 @router.post("/cases/{case_id}/diagnostics", response_model=DiagnosticResponse)
