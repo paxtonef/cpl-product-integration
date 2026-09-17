@@ -185,10 +185,6 @@ class TestB2KSupersession:
 
 class TestB2KStalenessLifecycleState:
     def test_lifecycle_status_and_verified_at_are_real_persisted_columns(self):
-        """§23: the repository can represent verified/current knowledge
-        and knowledge requiring source re-verification without deleting
-        either -- confirmed structurally: lifecycle_status and verified_at
-        both exist as real, independently-settable columns."""
         session = SessionLocal()
         try:
             doc = session.query(ManufacturerKnowledgeDocument).filter(
@@ -199,6 +195,58 @@ class TestB2KStalenessLifecycleState:
             assert doc.verified_at is None  # not yet set for this POC seed -- never fabricated
         finally:
             session.close()
+
+    def test_freshness_status_is_a_real_independent_column_defaulting_verified_current(self):
+        """PRE-INTEGRATION REPAIR: freshness_status is a separate,
+        independently-settable column from lifecycle_status -- confirmed
+        via the real, seeded row."""
+        session = SessionLocal()
+        try:
+            doc = session.query(ManufacturerKnowledgeDocument).filter(
+                ManufacturerKnowledgeDocument.document_id == "9999_9999_326_en-GB",
+                ManufacturerKnowledgeDocument.lifecycle_status == "ACTIVE",
+            ).first()
+            assert doc.freshness_status == "VERIFIED_CURRENT"
+        finally:
+            session.close()
+
+    def test_applicable_document_can_be_stale_through_real_persistence(self):
+        """§10 B, via a real database round trip: setting freshness_status
+        to STALE on the real, currently-ACTIVE, applicable Peugeot
+        document does not change its applicability -- the repository
+        still resolves it as REFERENCE_SET_AVAILABLE, while
+        freshness_status correctly reports STALE."""
+        session = SessionLocal()
+        try:
+            doc = session.query(ManufacturerKnowledgeDocument).filter(
+                ManufacturerKnowledgeDocument.document_id == "9999_9999_326_en-GB",
+                ManufacturerKnowledgeDocument.lifecycle_status == "ACTIVE",
+            ).first()
+            original_freshness = doc.freshness_status
+            doc.freshness_status = "STALE"
+            session.commit()
+        finally:
+            session.close()
+
+        try:
+            repo = PersistedKnowledgeRepositoryAdapter()
+            adapter = PeugeotDashboardKnowledgeAdapter(repository=repo)
+            result = adapter.get_dashboard_reference_set(_peugeot_vehicle(first_registration_date="2020-09-15"))
+            assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+            from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+            assert result.candidate_documents[0].freshness_status == KnowledgeFreshnessStatus.STALE
+        finally:
+            # restore, since other tests in this module rely on the
+            # seeded fixture's default freshness state
+            session = SessionLocal()
+            try:
+                doc = session.query(ManufacturerKnowledgeDocument).filter(
+                    ManufacturerKnowledgeDocument.document_id == "9999_9999_326_en-GB",
+                ).first()
+                doc.freshness_status = original_freshness
+                session.commit()
+            finally:
+                session.close()
 
 
 class TestB2KReconstructionAfterRestart:

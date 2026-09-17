@@ -172,6 +172,10 @@ def seed_peugeot_3008_knowledge(session_factory=SessionLocal) -> dict:
             source_authority="manufacturer_official",
             source_locator=_SOURCE_LOCATOR,
             lifecycle_status="ACTIVE",
+            # Explicit, never inferred from verified_at (which stays None
+            # here -- no verification timestamp has actually been
+            # supplied for this POC seed).
+            freshness_status="VERIFIED_CURRENT",
             supersedes_document_row_id=supersedes_row_id,
             content_hash=content_hash,
         )

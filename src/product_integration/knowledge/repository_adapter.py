@@ -22,8 +22,8 @@ from app.cpl.models.manufacturer_knowledge_document import ManufacturerKnowledge
 from app.db.engine import SessionLocal
 
 from pgdr.domain.dashboard_knowledge import (
-    ApplicabilityPeriod, DashboardReferenceEntry, IndicatorState, KnowledgeLifecycleStatus,
-    ManufacturerDocumentReference, SourceAuthority, VehicleApplicabilityContext,
+    ApplicabilityPeriod, DashboardReferenceEntry, IndicatorState, KnowledgeFreshnessStatus,
+    KnowledgeLifecycleStatus, ManufacturerDocumentReference, SourceAuthority, VehicleApplicabilityContext,
 )
 
 
@@ -44,6 +44,7 @@ def _row_to_document(row: ManufacturerKnowledgeDocument) -> ManufacturerDocument
         source_authority=SourceAuthority(row.source_authority),
         source_locator=row.source_locator,
         lifecycle_status=KnowledgeLifecycleStatus(row.lifecycle_status.lower()),
+        freshness_status=KnowledgeFreshnessStatus(row.freshness_status.lower()),
         verified_at=row.verified_at.isoformat() if row.verified_at else None,
         supersedes_document_id=None,  # resolved by document_id, not document_row_id -- see _resolve_supersedes below
     )
