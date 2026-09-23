@@ -94,14 +94,16 @@ class TestB2KProvenanceRoundTrip:
 
 
 class TestB2KApplicabilityRoundTrip:
-    def test_ambiguous_vehicle_still_uncertain_through_real_persistence(self):
-        """The exact behaviour the original B2-K mandate required,
-        confirmed unchanged now that the data path is a real database."""
+    def test_real_seed_needs_no_first_registration_date(self):
+        """VIR -> PGDR identity boundary correction (owner decision 3): the
+        date is required only when it discriminates between period-bound
+        candidates. The real seed has one document with no issue period,
+        so VIR's identity alone (which carries no such date) resolves it."""
         repo = PersistedKnowledgeRepositoryAdapter()
         adapter = PeugeotDashboardKnowledgeAdapter(repository=repo)
         result = adapter.get_dashboard_reference_set(_peugeot_vehicle())  # no first_registration_date
-        assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
-        assert result.entries == []
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert len(result.entries) == 11
 
     def test_resolved_vehicle_gets_real_reference_set(self):
         repo = PersistedKnowledgeRepositoryAdapter()
