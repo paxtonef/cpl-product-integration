@@ -1,13 +1,17 @@
 """Block B2-K — Knowledge Persistence Implementation Mandate v1, §17.
 
-Controlled, deterministic, idempotent initial ingestion of the already
-corrected and verified Peugeot 3008/5008 handbook content (document
-9999_9999_326_en-GB.pdf) into the new durable, non-execution-scoped
-persistence introduced by migration 028.
+Controlled, deterministic, idempotent initial ingestion of the
+owner-supplied, manually transcribed Peugeot 3008/5008 handbook content
+(document 9999_9999_326_en-GB.pdf) into the new durable,
+non-execution-scoped persistence introduced by migration 028.
+
+PROVENANCE: OWNER-ATTESTED, NOT INDEPENDENTLY VERIFIED -- the original PDF
+cannot currently be recovered to reproduce a check of these entries against
+the source; the content is not thereby disproved. See freshness_status below.
 
 This is NOT a crawler and does NOT acquire anything from the Internet --
 the content below is transcribed exactly, losslessly, from the same
-corrected fixture previously verified in
+corrected fixture formerly held in
 pgdr.adapters.peugeot_dashboard_knowledge (prior to this pass's refactor,
 which moved this content out of PGDR's own package and into durable
 storage). Running this function twice with unchanged content is a no-op
@@ -30,7 +34,7 @@ _DOCUMENT_ID = "9999_9999_326_en-GB"
 _DOCUMENT_TITLE = "MY PEUGEOT 3008 / MY PEUGEOT 5008 HANDBOOK"
 _SOURCE_LOCATOR = "Peugeot Service Box, document 9999_9999_326_en-GB.pdf"
 
-# The verified content itself. Kept as plain dicts (not PGDR Pydantic
+# The owner-attested (not independently verified) content itself. Kept as plain dicts (not PGDR Pydantic
 # objects) since this module belongs to PI/persistence, not PGDR --
 # PGDR domain types are never imported here; this data is written
 # straight to CPL's own ORM rows.
@@ -172,10 +176,12 @@ def seed_peugeot_3008_knowledge(session_factory=SessionLocal) -> dict:
             source_authority="manufacturer_official",
             source_locator=_SOURCE_LOCATOR,
             lifecycle_status="ACTIVE",
-            # Explicit, never inferred from verified_at (which stays None
-            # here -- no verification timestamp has actually been
-            # supplied for this POC seed).
-            freshness_status="VERIFIED_CURRENT",
+            # Owner-attested, NOT independently verified (source PDF not
+            # recoverable). VERIFIED_CURRENT would assert a verification
+            # that cannot be demonstrated: verified_at stays None and no
+            # reproducible verification evidence exists. source_authority
+            # above remains source attribution, not a verification claim.
+            freshness_status="OWNER_ATTESTED_UNVERIFIED",
             supersedes_document_row_id=supersedes_row_id,
             content_hash=content_hash,
         )

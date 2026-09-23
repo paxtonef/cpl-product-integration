@@ -196,17 +196,23 @@ class TestB2KStalenessLifecycleState:
         finally:
             session.close()
 
-    def test_freshness_status_is_a_real_independent_column_defaulting_verified_current(self):
+    def test_seeded_peugeot_is_owner_attested_unverified_never_verified_current(self):
         """PRE-INTEGRATION REPAIR: freshness_status is a separate,
         independently-settable column from lifecycle_status -- confirmed
-        via the real, seeded row."""
+        via the real, seeded row. B2 source-veracity correction: the Peugeot
+        rows are owner-attested, not independently verified, so they must
+        never assert VERIFIED_CURRENT while verified_at is None."""
         session = SessionLocal()
         try:
             doc = session.query(ManufacturerKnowledgeDocument).filter(
                 ManufacturerKnowledgeDocument.document_id == "9999_9999_326_en-GB",
                 ManufacturerKnowledgeDocument.lifecycle_status == "ACTIVE",
             ).first()
-            assert doc.freshness_status == "VERIFIED_CURRENT"
+            assert doc.freshness_status == "OWNER_ATTESTED_UNVERIFIED"
+            assert doc.verified_at is None
+            assert not (doc.freshness_status == "VERIFIED_CURRENT" and doc.verified_at is None)
+            # source attribution is unchanged (Option 1): eligibility unaffected
+            assert doc.source_authority == "manufacturer_official"
         finally:
             session.close()
 
