@@ -12,6 +12,11 @@ NOT embedded into CPL (per PI-01's own non-scope rule); the full identity
 stays in the RunnerArtifact payload (see cpl_registration.py), and only
 this small display/summary projection lives on VehicleDetail, matching
 what the existing column set already defines as in scope.
+
+first_registration_date is never written from VIR: VIR supplies no
+first-registration fact, and production.start_date (when the vehicle's
+production run began) is a different fact. The column stays None until a
+genuine first-registration source exists; an existing value is left as is.
 """
 from __future__ import annotations
 
@@ -39,7 +44,6 @@ def write_vehicle_detail(
     already resolved which Asset this identity belongs to (CPL's own
     Asset-identity authority, not this function's)."""
     identifiers = canonical_identity.get("identifiers") or {}
-    production = canonical_identity.get("production") or {}
 
     existing = session.get(VehicleDetail, asset_id)
     now = datetime.now(timezone.utc)
@@ -53,7 +57,7 @@ def write_vehicle_detail(
             make=canonical_identity.get("manufacturer"),
             model=canonical_identity.get("model"),
             variant=canonical_identity.get("variant"),
-            first_registration_date=_parse_date(production.get("start_date")),
+            first_registration_date=None,  # no genuine first-registration fact exists in VIR
             source_resolution_id=source_resolution_id,
             created_at=now, updated_at=now,
         )
@@ -66,19 +70,7 @@ def write_vehicle_detail(
     existing.make = canonical_identity.get("manufacturer") or existing.make
     existing.model = canonical_identity.get("model") or existing.model
     existing.variant = canonical_identity.get("variant") or existing.variant
-    parsed_date = _parse_date(production.get("start_date"))
-    if parsed_date is not None:
-        existing.first_registration_date = parsed_date
     if source_resolution_id is not None:
         existing.source_resolution_id = source_resolution_id
     existing.updated_at = now
     return existing
-
-
-def _parse_date(value: Optional[str]):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).date()
-    except ValueError:
-        return None
