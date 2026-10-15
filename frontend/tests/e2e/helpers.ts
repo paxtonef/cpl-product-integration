@@ -20,6 +20,8 @@ export async function registerAndResolveVehicle(
     // existing convention of targeting fields by label text throughout.
     await page.getByLabel('VIN', { exact: true }).fill(opts.vin ?? 'VF3XXXXXXXXXXXXXX')
   }
+  // VIR V1: the registration country is always the user's explicit choice.
+  await page.getByLabel('Registration country').selectOption('FR')
   await page.getByRole('button', { name: 'Continue' }).click()
   await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()

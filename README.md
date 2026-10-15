@@ -11,3 +11,9 @@ before PI-01's integration — created here as an orphan root, then merged
 with the fully verified `pi-01-vf-01-repair-candidate` branch, preserving
 that branch's complete history (build → initial verification → repair →
 re-verification) rather than rewriting or squashing it.
+
+## Running the assembly (VIR V1)
+
+`scripts/lancer_montage.sh` starts VIR, PGDR and PI-05 on the loopback; prerequisites, exact
+commands and the 2026-10-15 reconnection with VIR V1 are in
+`docs/build/PI_RACCORDEMENT_VIR_V1_COMPTE_RENDU_v0.md`.

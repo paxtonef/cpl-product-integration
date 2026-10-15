@@ -49,6 +49,7 @@ from typing import Optional
 from pgdr.enums import ResolutionStatus as PGDRResolutionStatus
 from pgdr.models import ConfidenceScore as PGDRConfidenceScore
 from pgdr.models import VehicleIdentityContext as PGDRVehicleIdentityContext
+from vir.domain.driver_confirmation import CONFIRMABLE_FIELDS, USER_CONFIRMED, epistemic_status
 from vir.domain.enums import ResolutionStatus as VIRResolutionStatus
 from vir.domain.models import Contradiction as VIRContradiction
 from vir.domain.models import DiagnosticIdentityContext as VIRDiagnosticIdentityContext
@@ -115,6 +116,30 @@ def _build_pgdr_context(
     )
 
 
+def _confirmation_only_fields(resolution: VIRVehicleIdentityResolution) -> list[str]:
+    """VIR V1: the fields whose retained value rests on a driver confirmation
+    alone (VIR's own epistemic_status == "user_confirmed": no decode nor
+    qualified provider behind it). PGDR's contract has no provenance slot, so
+    such a value cannot be handed on without reading as known."""
+    evidence = {fe.field_path: fe for fe in resolution.field_evidence}
+    return sorted(
+        path for path in CONFIRMABLE_FIELDS
+        if path in evidence and epistemic_status(evidence[path].sources, evidence[path].resolved_value) == USER_CONFIRMED
+    )
+
+
+def _withhold(vehicle_identity: dict, path: str) -> None:
+    """Sets one dotted path of the dumped identity to None (unknown)."""
+    *parents, leaf = path.split(".")
+    node = vehicle_identity
+    for key in parents:
+        node = node.get(key)
+        if not isinstance(node, dict):
+            return
+    if leaf in node:
+        node[leaf] = None
+
+
 def map_diagnostic_context(context: VIRDiagnosticIdentityContext) -> PGDRVehicleIdentityContext:
     """Primary path (§5/§12). Pure, deterministic, no I/O. Raises
     VIRPGDRHandoffError if `context.identity_status` is one of the 3
@@ -157,10 +182,21 @@ def map_resolution(resolution: VIRVehicleIdentityResolution) -> PGDRVehicleIdent
         resolution.vehicle_identity.model_dump(mode="json") if resolution.vehicle_identity is not None else None
     )
 
+    # VIR V1 driver confirmations: a value resting on a confirmation alone is
+    # never handed to PGDR as a known value (it is not a decode); PGDR sees it
+    # as unknown. Status (VIR already caps it at provisionally_resolved) and
+    # every decoded or concordantly-confirmed value are unchanged.
+    unresolved_fields = list(resolution.unresolved_fields)
+    if vehicle_identity is not None:
+        for path in _confirmation_only_fields(resolution):
+            _withhold(vehicle_identity, path)
+            if path not in unresolved_fields:
+                unresolved_fields.append(path)
+
     contradictions = [_flatten_contradiction(c) for c in resolution.contradictions]
 
     return _build_pgdr_context(
         resolution_id=resolution.resolution_id, pgdr_status=pgdr_status,
         vehicle_identity=vehicle_identity, confidence=confidence,
-        unresolved_fields=list(resolution.unresolved_fields), contradictions=contradictions,
+        unresolved_fields=unresolved_fields, contradictions=contradictions,
     )

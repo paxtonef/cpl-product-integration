@@ -49,25 +49,58 @@ class TestVIRClient:
         resolution = await vir_client.resolve(request)
         assert resolution.resolution_status == "ambiguous"
         assert len(resolution.clarification_questions) >= 1
-        answer = ClarificationAnswer(
-            question_id=resolution.clarification_questions[0].question_id, value="test-answer",
-        )
+        question = resolution.clarification_questions[0]
+        # VIR V1 (6bdd958) applies and validates the answer by target field:
+        # a power must be a positive number, a choice one of the offered values.
+        if question.choices:
+            value = question.choices[0].value
+        elif question.target_field == "engine.power_kw":
+            value = 81
+        else:
+            value = "test-answer"
+        answer = ClarificationAnswer(question_id=question.question_id, value=value)
         result = await vir_client.submit_clarification(
             resolution.resolution_id, ClarificationRequest(answers=[answer]),
         )
         assert result.resolution_id  # a resolution came back; VIR's own logic decides if it's new or same
+
+    async def test_invalid_power_answer_is_refused_and_resolution_kept(self, vir_client: VIRClient):
+        request = VehicleIdentityRequest(
+            request_id="PI01-CLARIFY-INVALID",
+            registration={"registration_number": "AM-BIG-01", "country_code": "FR"},
+            consent=ConsentInput(external_lookup_allowed=True),
+        )
+        resolution = await vir_client.resolve(request)
+        power_questions = [q for q in resolution.clarification_questions if q.target_field == "engine.power_kw"]
+        assert power_questions, "VIR's ambiguous fixture is expected to ask for the power"
+        with pytest.raises(VIRTechnicalFailureError) as exc_info:
+            await vir_client.submit_clarification(resolution.resolution_id, ClarificationRequest(
+                answers=[ClarificationAnswer(question_id=power_questions[0].question_id, value="not-a-number")]))
+        assert exc_info.value.error_code == "VIR-ERR-016"
+        kept = await vir_client.get_resolution(resolution.resolution_id)
+        assert kept.resolution_status == resolution.resolution_status
 
     async def test_get_nonexistent_resolution_raises_not_found(self, vir_client: VIRClient):
         with pytest.raises(VIRResolutionNotFoundError):
             await vir_client.get_resolution("DOES-NOT-EXIST")
 
     async def test_invalid_request_raises_technical_failure(self, vir_client: VIRClient):
-        # No identifier at all -> VIR's own MissingIdentifierError (VIR-ERR-001, HTTP 400)
+        # VIR V1 (request_validation.py) checks the registration country
+        # first: none at all -> RegistrationCountryMissingError (VIR-ERR-011, 422).
         request = VehicleIdentityRequest(request_id="PI01-INVALID", consent=ConsentInput(external_lookup_allowed=True))
         with pytest.raises(VIRTechnicalFailureError) as exc_info:
             await vir_client.resolve(request)
-        assert exc_info.value.error_code == "VIR-ERR-001"
-        assert exc_info.value.http_status == 400
+        assert exc_info.value.error_code == "VIR-ERR-011"
+        assert exc_info.value.http_status == 422
+
+    async def test_country_without_identifier_raises_technical_failure(self, vir_client: VIRClient):
+        # Country given, neither plate nor VIN -> PlateOrVinRequiredError (VIR-ERR-014, 422).
+        request = VehicleIdentityRequest(request_id="PI01-INVALID-2", registration={"country_code": "FR"},
+                                         consent=ConsentInput(external_lookup_allowed=True))
+        with pytest.raises(VIRTechnicalFailureError) as exc_info:
+            await vir_client.resolve(request)
+        assert exc_info.value.error_code == "VIR-ERR-014"
+        assert exc_info.value.http_status == 422
 
     async def test_transport_failure_raised_distinctly(self):
         transport = httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused")))

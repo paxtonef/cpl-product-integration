@@ -52,6 +52,7 @@ from product_integration.orchestration.case_orchestration import (
 from product_integration.orchestration.case_orchestration import _sync_case_with_execution
 from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.vir.client import VIRClient
+from product_integration.vir.errors import VIRClientError, VIRTechnicalFailureError
 
 from product_integration.api.deps import get_authority, get_media_storage, get_pgdr_registry, get_vir_client
 from product_integration.media.storage import LocalMediaStorage, MediaValidationError
@@ -135,8 +136,10 @@ def _build_real_vir_request(body: StartCaseRequest) -> RealVIRRequest:
     kwargs: dict = {"request_id": body.request_id, "consent": VIRConsentInput(external_lookup_allowed=body.consent.external_lookup_allowed)}
     if body.vin:
         kwargs["vin"] = body.vin
-    if body.registration_number:
-        kwargs["registration"] = RegistrationInput(registration_number=body.registration_number, country_code=body.registration_country_code or "FR")
+    # VIR V1 (request_validation.py): the registration country is the one the
+    # user chose, required for a VIN as for a plate, never defaulted here.
+    if body.registration_number or body.registration_country_code:
+        kwargs["registration"] = RegistrationInput(registration_number=body.registration_number, country_code=body.registration_country_code)
     if body.manufacturer or body.model:
         kwargs["manual_identity"] = ManualIdentityInput(manufacturer=body.manufacturer, model=body.model)
     return RealVIRRequest(**kwargs)
@@ -151,8 +154,8 @@ async def start_case_route(
     product_request_kwargs: dict = {"request_id": body.request_id, "consent": ProductConsentInput(external_lookup_allowed=body.consent.external_lookup_allowed)}
     if body.vin:
         product_request_kwargs["vin"] = body.vin
-    if body.registration_number:
-        product_request_kwargs["registration"] = {"registration_number": body.registration_number, "country_code": body.registration_country_code or "FR"}
+    if body.registration_number or body.registration_country_code:
+        product_request_kwargs["registration"] = {"registration_number": body.registration_number, "country_code": body.registration_country_code}
     if body.manufacturer or body.model:
         product_request_kwargs["manual_identity"] = {"manufacturer": body.manufacturer, "model": body.model}
     vir_request = ProductVIRRequest(**product_request_kwargs)
@@ -204,10 +207,22 @@ async def submit_clarification_route(
         original_resolution_id = vir_artifact.payload.get("resolution_id")
         asset_id = case.asset_id
 
-    clarified = await vir_client.submit_clarification(
-        original_resolution_id,
-        VIRClarificationRequest(answers=[VIRClarificationAnswer(question_id=a.question_id, value=a.value) for a in body.answers]),
-    )
+    # VIR V1 refuses an answer it cannot apply (VIR-ERR-016, resolution left
+    # unchanged): a typed VIR failure for the product, nothing recorded here.
+    try:
+        clarified = await vir_client.submit_clarification(
+            original_resolution_id,
+            VIRClarificationRequest(answers=[VIRClarificationAnswer(question_id=a.question_id, value=a.value) for a in body.answers]),
+        )
+    except VIRTechnicalFailureError as exc:
+        raise ProductAPIError(
+            ProductAPIErrorCategory.VIR_TECHNICAL_FAILURE, str(exc),
+            extra={"case_id": str(case_id), "vir_error_code": exc.error_code, "recoverable": exc.recoverable},
+        ) from None
+    except VIRClientError as exc:
+        raise ProductAPIError(
+            ProductAPIErrorCategory.VIR_TECHNICAL_FAILURE, type(exc).__name__, extra={"case_id": str(case_id)},
+        ) from None
 
     vir_result = register_vir_resolution_result(
         vir_resolution=clarified, case_id=case_id, asset_id=asset_id, authority=authority,

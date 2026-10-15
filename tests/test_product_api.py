@@ -70,7 +70,7 @@ async def _register_vehicle(client) -> dict:
 async def _start_case_vir(client, veh, vin: str = "VF3XXXXXXXXXXXXXX", **overrides) -> dict:
     body = {
         "contact_id": veh["contact_id"], "asset_id": veh["asset_id"], "request_id": f"vir-{uuid.uuid4().hex[:10]}",
-        "vin": vin, "consent": {"external_lookup_allowed": True}, "case_idempotency_key": f"case-{uuid.uuid4().hex[:10]}",
+        "vin": vin, "registration_country_code": "FR", "consent": {"external_lookup_allowed": True}, "case_idempotency_key": f"case-{uuid.uuid4().hex[:10]}",
     }
     body.update(overrides)
     r = await client.post("/cases", json=body)

@@ -40,6 +40,7 @@ def _register_and_resolve() -> str:
                 "contact_id": vehicle["contact_id"], "asset_id": vehicle["asset_id"],
                 "request_id": f"b15-case-{uuid.uuid4().hex[:10]}",
                 "vin": "VF3XXXXXXXXXXXXXX",
+                "registration_country_code": "FR",
                 "case_idempotency_key": f"b15-case-idem-{uuid.uuid4().hex[:10]}",
                 "consent": {"external_lookup_allowed": True},
             },

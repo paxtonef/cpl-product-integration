@@ -33,6 +33,7 @@ def _register_and_resolve() -> str:
                 "contact_id": vehicle["contact_id"], "asset_id": vehicle["asset_id"],
                 "request_id": f"blocka-case-{uuid.uuid4().hex[:10]}",
                 "vin": "VF3XXXXXXXXXXXXXX",
+                "registration_country_code": "FR",
                 "case_idempotency_key": f"blocka-case-idem-{uuid.uuid4().hex[:10]}",
                 "consent": {"external_lookup_allowed": True},
             },

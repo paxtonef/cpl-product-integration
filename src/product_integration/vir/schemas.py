@@ -77,6 +77,13 @@ class CanonicalVehicleIdentity(BaseModel):
     transmission: dict[str, Any] = Field(default_factory=dict)
     drivetrain: Optional[str] = None
     identifiers: dict[str, Any] = Field(default_factory=dict)
+    # VIR V1 (vir-v1-finalisation) — optional, absent from older resolutions.
+    version: Optional[str] = None
+    model_year: Optional[int] = None
+    cluster_type: Optional[str] = None
+    first_registration_date: Optional[str] = None
+    simulated: bool = False
+    user_declared: bool = False
 
 
 class VehicleCandidate(BaseModel):
@@ -121,6 +128,16 @@ class SourceEvidence(BaseModel):
     source_id: str
     reported_value: Any
     reliability: str
+    # VIR V1 provenance of this source (method "user_confirmation" is never a
+    # decode); kept so the governed artifact and PI-02 see what VIR said.
+    method: Optional[str] = None
+    confidence: Optional[float] = None
+    simulated: bool = False
+    partial: bool = False
+    user_declared: bool = False
+    role: Optional[str] = None
+    source_value: Any = None
+    provider_field: Optional[str] = None
 
 
 class FieldEvidence(BaseModel):
@@ -128,6 +145,7 @@ class FieldEvidence(BaseModel):
     resolved_value: Any
     sources: list[SourceEvidence] = Field(default_factory=list)
     confidence: str = "medium"
+    consulted_without_value: list[SourceEvidence] = Field(default_factory=list)
 
 
 class SourceSummary(BaseModel):
@@ -154,6 +172,16 @@ class VehicleIdentityResolution(BaseModel):
     field_evidence: list[FieldEvidence] = Field(default_factory=list)
     source_summary: list[SourceSummary] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    # VIR V1 — indicators and declared/confirmed fields, optional. Raw provider
+    # values (provider_unconfirmed_fields, provider_descriptive_info) are
+    # deliberately NOT mirrored: VIR never hands them on
+    # (docs/TRANSFERT_DIAGNOSTIC_VIR.md §1).
+    registration_country: Optional[str] = None
+    simulated: bool = False
+    user_declared_fields: list[str] = Field(default_factory=list)
+    user_confirmed_fields: list[str] = Field(default_factory=list)
+    exact_factory_configuration_known: bool = False
+    exact_factory_configuration_reasons: list[str] = Field(default_factory=list)
 
 
 class DiagnosticIdentityContext(BaseModel):

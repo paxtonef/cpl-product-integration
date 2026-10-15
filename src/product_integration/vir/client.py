@@ -17,9 +17,16 @@ response cycle is exercised, never VIR's Python functions directly).
 
 No hidden retry policy, no infinite retry: exactly one attempt per call.
 Retry, if ever wanted, is the caller's decision, not this client's.
+
+Service access (VIR V1, vir/security/service_auth.py): every /v1 route
+requires the X-VIR-Service-Token header. The token is given explicitly or
+read from PI_VIR_SERVICE_TOKEN; it is sent on every request and never
+placed in an error message. Without it VIR refuses the call (fail closed),
+which surfaces here as a VIRClientError like any other refusal.
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import httpx
@@ -42,15 +49,20 @@ from product_integration.vir.schemas import (
 )
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
+SERVICE_TOKEN_HEADER = "X-VIR-Service-Token"
+SERVICE_TOKEN_ENV = "PI_VIR_SERVICE_TOKEN"
 
 
 class VIRClient:
     """One instance wraps one httpx.AsyncClient (caller-supplied, so tests
     can bind it to VIR's ASGI app in-process instead of a real socket)."""
 
-    def __init__(self, http_client: httpx.AsyncClient, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS):
+    def __init__(self, http_client: httpx.AsyncClient, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+                 service_token: Optional[str] = None):
         self._http = http_client
         self._timeout = timeout_seconds
+        token = service_token if service_token is not None else os.environ.get(SERVICE_TOKEN_ENV, "")
+        self._headers = {SERVICE_TOKEN_HEADER: token} if token.strip() else {}
 
     async def resolve(self, request: VehicleIdentityRequest) -> VehicleIdentityResolution:
         """POST /v1/vehicle-identities/resolve. Returns normally for every
@@ -85,7 +97,7 @@ class VIRClient:
 
     async def _request(self, method: str, path: str, *, json: Optional[dict] = None) -> httpx.Response:
         try:
-            response = await self._http.request(method, path, json=json, timeout=self._timeout)
+            response = await self._http.request(method, path, json=json, headers=self._headers, timeout=self._timeout)
         except httpx.TimeoutException as exc:
             raise VIRTimeoutError(f"VIR request timed out after {self._timeout}s: {method} {path}") from exc
         except httpx.TransportError as exc:

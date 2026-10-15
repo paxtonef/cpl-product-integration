@@ -29,7 +29,7 @@ from app.cpl.models.asset import Asset
 from app.cpl.models.case import Case
 
 from product_integration.vir.client import VIRClient
-from product_integration.vir.schemas import ConsentInput, VehicleIdentityRequest
+from product_integration.vir.schemas import ConsentInput, RegistrationInput, VehicleIdentityRequest
 
 pytestmark = pytest.mark.skipif(not check_db_connection(), reason="PostgreSQL not available")
 
@@ -61,6 +61,22 @@ def _cpl_alembic_ini():
     import app
     from pathlib import Path
     return Path(app.__file__).resolve().parent.parent / "alembic.ini"
+
+
+@pytest.fixture(autouse=True)
+def vir_service_env(monkeypatch) -> str:
+    """VIR V1 fails closed without its service token and its storage
+    encryption key (vir.security.service_auth, vir.security.encryption).
+    Fictitious values, fresh per test, mirroring VIR's own tests/conftest.py
+    vir_env; PI-01's client is given the same token via PI_VIR_SERVICE_TOKEN."""
+    import base64
+    import secrets
+
+    token = "fictive-pi-vir-token-" + secrets.token_hex(8)
+    monkeypatch.setenv("VIR_SERVICE_TOKEN", token)
+    monkeypatch.setenv("PI_VIR_SERVICE_TOKEN", token)
+    monkeypatch.setenv("VIR_DATA_ENCRYPTION_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"))
+    return token
 
 
 @pytest.fixture
@@ -165,5 +181,6 @@ def make_vin_request(vin: str = "VF3XXXXXXXXXXXXXX", request_id: str | None = No
     a Peugeot via the in-memory VIN decoder stub adapter."""
     return VehicleIdentityRequest(
         request_id=request_id or f"PI01-TEST-{uuid.uuid4().hex[:12]}",
-        vin=vin, consent=ConsentInput(external_lookup_allowed=True),
+        vin=vin, registration=RegistrationInput(country_code="FR"),  # explicit choice, VIR V1
+        consent=ConsentInput(external_lookup_allowed=True),
     )

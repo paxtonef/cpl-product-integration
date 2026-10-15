@@ -7,9 +7,15 @@ import { RegistrationForm, type RegistrationResult } from '../components/Registr
 import { VIRResolutionPanel } from '../components/VIRResolutionPanel'
 import type { CaseVIRResponse } from '../api/types'
 
-function StartCaseForm({ contactId, assetId }: { contactId: string; assetId: string }) {
+// VIR V1 resolves only for a registration country chosen explicitly by the
+// user (VIR's countries.yaml: France is the only enabled one); never preselected
+// nor deduced here.
+const REGISTRATION_COUNTRIES = [{ code: 'FR', label: 'France' }]
+
+export function StartCaseForm({ contactId, assetId }: { contactId: string; assetId: string }) {
   const [vin, setVin] = useState('')
   const [registrationNumber, setRegistrationNumber] = useState('')
+  const [registrationCountry, setRegistrationCountry] = useState('')
   const [status, setStatus] = useState<'ready' | 'submitting'>('ready')
   const [error, setError] = useState<ApiError | null>(null)
   const [result, setResult] = useState<CaseVIRResponse | null>(null)
@@ -22,6 +28,10 @@ function StartCaseForm({ contactId, assetId }: { contactId: string; assetId: str
       setError(new ApiError('VALIDATION', 'Please enter a VIN or a registration number.', 422))
       return
     }
+    if (!registrationCountry) {
+      setError(new ApiError('VALIDATION', 'Please choose the registration country.', 422))
+      return
+    }
     setStatus('submitting')
     try {
       const response = await apiClient.startCaseVIR({
@@ -30,7 +40,7 @@ function StartCaseForm({ contactId, assetId }: { contactId: string; assetId: str
         request_id: crypto.randomUUID(),
         vin: vin.trim() || null,
         registration_number: registrationNumber.trim() || null,
-        registration_country_code: registrationNumber.trim() ? 'FR' : null,
+        registration_country_code: registrationCountry,
         consent: { external_lookup_allowed: true },
         case_idempotency_key: crypto.randomUUID(),
       })
@@ -73,6 +83,24 @@ function StartCaseForm({ contactId, assetId }: { contactId: string; assetId: str
           onChange={(event) => setRegistrationNumber(event.target.value)}
           disabled={status === 'submitting'}
         />
+      </div>
+      <div>
+        <label htmlFor="registrationCountry">Registration country</label>
+        <select
+          id="registrationCountry"
+          value={registrationCountry}
+          onChange={(event) => setRegistrationCountry(event.target.value)}
+          disabled={status === 'submitting'}
+        >
+          <option value="" disabled>
+            Choose…
+          </option>
+          {REGISTRATION_COUNTRIES.map((country) => (
+            <option key={country.code} value={country.code}>
+              {country.label}
+            </option>
+          ))}
+        </select>
       </div>
       <button type="submit" disabled={status === 'submitting'}>
         {status === 'submitting' ? 'Starting…' : 'Continue'}

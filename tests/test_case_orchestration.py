@@ -27,7 +27,7 @@ from vir.domain.models import (
 from vir.domain.enums import ConfidenceLevel, ResolutionStatus as VIRResolutionStatus
 
 from product_integration.vir.client import VIRClient
-from product_integration.vir.schemas import ConsentInput, VehicleIdentityRequest
+from product_integration.vir.schemas import ConsentInput, RegistrationInput, VehicleIdentityRequest
 from product_integration.cpl_registration import VIRRegistrationOutcome, register_vir_resolution_result
 from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.orchestration.case_orchestration import (
@@ -83,6 +83,7 @@ async def vir_client(vir_isolated_store) -> VIRClient:
 def make_vin_request(request_id: str | None = None, vin: str = "VF3XXXXXXXXXXXXXX") -> VehicleIdentityRequest:
     return VehicleIdentityRequest(
         request_id=request_id or f"PI04-VIR-{uuid.uuid4().hex[:12]}", vin=vin,
+        registration=RegistrationInput(country_code="FR"),  # explicit choice, VIR V1
         consent=ConsentInput(external_lookup_allowed=True),
     )
 

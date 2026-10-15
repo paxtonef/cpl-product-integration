@@ -20,6 +20,7 @@ test('B. VIR clarification path: automatic routing, then clarify and continue', 
   await page.getByRole('button', { name: 'Register' }).click()
   await expect(page.getByRole('heading', { name: 'Vehicle identity' })).toBeVisible()
   await page.getByLabel("Registration number (if you don't have the VIN)").fill('AM-BIG-01')
+  await page.getByLabel('Registration country').selectOption('FR')
   await page.getByRole('button', { name: 'Continue' }).click()
   await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()
@@ -29,18 +30,17 @@ test('B. VIR clarification path: automatic routing, then clarify and continue', 
   await expect(page.getByRole('heading', { name: 'We need a bit more information' })).toBeVisible()
   const caseId = page.url().split('/cases/')[1].split('/clarification')[0]
 
-  // Answer every rendered clarification question.
+  // Answer every choice question.
   const selects = page.locator('form[aria-label="Clarification needed"] select')
-  const inputs = page.locator('form[aria-label="Clarification needed"] input')
   const selectCount = await selects.count()
   for (let i = 0; i < selectCount; i++) {
     await selects.nth(i).selectOption({ index: 1 })
   }
-  const inputCount = await inputs.count()
-  for (let i = 0; i < inputCount; i++) {
-    await inputs.nth(i).fill('unknown')
-  }
+  // VIR V1 applies and validates every answer it receives (an arbitrary text
+  // as a VIN is refused, VIR-ERR-016): optional free-text questions are left
+  // unanswered, as a user without that information would.
   await page.getByRole('button', { name: 'Submit' }).click()
+  await expect(page.getByRole('alert')).toHaveCount(0)
 
   // Same case_id continues -- no fresh vehicle registration was triggered.
   await expect(page).toHaveURL(new RegExp(`/cases/${caseId}`), { timeout: 15000 })

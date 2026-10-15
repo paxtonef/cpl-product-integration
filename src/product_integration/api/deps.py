@@ -51,8 +51,10 @@ def get_authority() -> AuthorityContext:
 # hardcoded constant -- production deployment would point this at VIR's
 # real service address; tests override get_vir_http_client entirely to use
 # an ASGI transport against VIR's own app object (§35 -- real VIR HTTP
-# semantics, never a fake response).
-VIR_BASE_URL = "http://vir-service.internal"
+# semantics, never a fake response). PI_VIR_BASE_URL, when set, gives that
+# address at process start (scripts/lancer_montage.sh); the default is unchanged.
+import os as _os
+VIR_BASE_URL = _os.environ.get("PI_VIR_BASE_URL") or "http://vir-service.internal"
 
 
 async def get_vir_http_client() -> httpx.AsyncClient:
