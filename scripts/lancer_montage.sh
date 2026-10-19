@@ -21,6 +21,8 @@
 #
 # Journaux : PI et PGDR sans journal d'accès d'uvicorn (--no-access-log, chemins et
 # requêtes porteurs d'identifiants) ; chacun écrit un gabarit de route par requête.
+# vir.log, pgdr.log et pi05.log (lignes d'audit comprises) sont complétés à chaque démarrage,
+# jamais tronqués ; leur rotation et leur durée de conservation relèvent de l'exploitant.
 #
 # Mode production (PI_FRONTEND_DIST défini : frontend construit par
 # deploy/installer.sh) : un seul point d'entrée public, HTTPS, servant le
@@ -84,21 +86,26 @@ if [ -n "${PI_FRONTEND_DIST:-}" ]; then
 fi
 
 cd "$MONTAGE_DIR"
+# Arrêt borné : un client qui laisse une connexion TLS inactive ouverte retiendrait l'arrêt 30 s (attente de
+# sa fermeture TLS), au-delà du TimeoutStopSec=20 de l'unité ; chaque service s'arrête en 10 s au plus.
+graceful=(--timeout-graceful-shutdown 10)
 pids=()
 trap 'kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true' EXIT INT TERM
 
-python -m uvicorn vir.api.routes:app --host 127.0.0.1 --port "$VIR_PORT" > vir.log 2>&1 &
+python -m uvicorn vir.api.routes:app --host 127.0.0.1 --port "$VIR_PORT" "${graceful[@]}" >> vir.log 2>&1 &
 pids+=($!)
-python -m uvicorn pgdr.web_app:app --host 127.0.0.1 --port "$PGDR_PORT" --no-access-log > pgdr.log 2>&1 &
+python -m uvicorn pgdr.web_app:app --host 127.0.0.1 --port "$PGDR_PORT" --no-access-log "${graceful[@]}" \
+  >> pgdr.log 2>&1 &
 pids+=($!)
 if [ -n "$production" ]; then
   python -m uvicorn --factory product_integration.api.production:create_production_app \
     --host "$PI_PUBLIC_HOST" --port "$PI_PUBLIC_PORT" --workers 1 --no-server-header \
-    --no-access-log "${proxy_flags[@]}" \
-    --ssl-certfile "$PI_TLS_CERT" --ssl-keyfile "$PI_TLS_KEY" > pi05.log 2>&1 &
+    --no-access-log "${graceful[@]}" "${proxy_flags[@]}" \
+    --ssl-certfile "$PI_TLS_CERT" --ssl-keyfile "$PI_TLS_KEY" >> pi05.log 2>&1 &
   pi_health="https://127.0.0.1:${PI_PUBLIC_PORT}/health"
 else
-  python -m uvicorn product_integration.api.app:app --host 127.0.0.1 --port "$PI_PORT" --no-access-log > pi05.log 2>&1 &
+  python -m uvicorn product_integration.api.app:app --host 127.0.0.1 --port "$PI_PORT" --no-access-log \
+    "${graceful[@]}" >> pi05.log 2>&1 &
   pi_health="http://127.0.0.1:${PI_PORT}/health"
 fi
 pids+=($!)

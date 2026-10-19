@@ -254,6 +254,7 @@ def test_point4_and_1_legitimate_parcours_in_the_browser_under_https(montage):
 def test_point1_after_a_complete_restart_the_result_is_read_without_pgdr(montage):
     montage.stop()
     montage.start()
+    since = len(montage.logs()["pgdr.log"])        # logs are appended across restarts (bloc 3B)
     with montage.client() as c:
         sign_in(c, STATE["login"], STATE["password"])
         r = c.get(f"/cases/{STATE['case_id']}/notice-results")
@@ -263,7 +264,7 @@ def test_point1_after_a_complete_restart_the_result_is_read_without_pgdr(montage
             r = c.get(f"/v1/parcours/{old}", headers=page_headers)
             assert r.status_code == 404 and "nouveau parcours" in r.json()["detail"]
         time.sleep(0.5)
-        assert "/api/v1/parcours/" not in montage.logs()["pgdr.log"]          # nothing asked of PGDR
+        assert "/api/v1/parcours/" not in montage.logs()["pgdr.log"][since:]  # nothing asked of PGDR
         reopened = c.post(f"/cases/{STATE['case_id']}/notice-parcours").json()
         new = reopened["page"].split("p=", 1)[1]
         assert new not in (STATE["pid"], STATE["unfinished"])

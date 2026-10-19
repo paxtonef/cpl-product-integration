@@ -56,7 +56,7 @@ from product_integration.orchestration.case_orchestration import (
 from product_integration.orchestration.case_orchestration import _sync_case_with_execution
 from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.vir.client import VIRClient
-from product_integration.vir.errors import VIRClientError, VIRTechnicalFailureError
+from product_integration.vir.errors import VIRClientError, VIRResolutionNotFoundError, VIRTechnicalFailureError
 from product_integration.vir.presentation import build_view, redact_identifiers
 from vir.domain.driver_confirmation import CONFIRMABLE_FIELDS
 
@@ -304,7 +304,12 @@ def _has_diagnostic(session, case_id: UUID) -> bool:
 
 def _vir_refusal(exc: VIRClientError, case_id: UUID) -> ProductAPIError:
     """A value VIR refuses is the user's to fix (422, VIR's error code, never
-    the value nor VIR's message); anything else is a VIR failure (502)."""
+    the value nor VIR's message); a resolution VIR no longer keeps is said so
+    (410: its retention ended, never a technical failure); anything else is a
+    VIR failure (502)."""
+    if isinstance(exc, VIRResolutionNotFoundError):
+        return ProductAPIError(ProductAPIErrorCategory.VIR_RESULT_NOT_KEPT, "VIR no longer keeps this identification",
+                               extra={"case_id": str(case_id)})
     if isinstance(exc, VIRTechnicalFailureError) and exc.http_status in (409, 422):
         return ProductAPIError(ProductAPIErrorCategory.VIR_INPUT_REFUSED, "VIR did not accept this value",
                                extra={"case_id": str(case_id), "vir_error_code": exc.error_code})

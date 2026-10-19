@@ -50,7 +50,7 @@ def concrete(path: str) -> str:
         if name == "sub_path":
             return "/return"
         if name == "field_path":
-            return "driven_wheels"
+            return "drivetrain"
         return str(uuid.uuid4())
     return re.sub(r"\{([^}]+)\}", value, path)
 
@@ -74,7 +74,7 @@ async def test_a_foreign_origin_changes_nothing(app, user_a):
     assert vehicles.status_code == 403
     before = (await user_a.get(f"/cases/{case_id}")).json()
     r = await user_a.post(f"/cases/{case_id}/vir/confirmations", headers={"Origin": "https://evil.test"},
-                          json={"field_path": "driven_wheels", "value": "front_wheel_drive"})
+                          json={"field_path": "drivetrain", "value": "front_wheel_drive"})
     assert r.status_code == 403
     assert (await user_a.get(f"/cases/{case_id}")).json() == before
     assert (await user_a.get("/me")).status_code == 200          # reads are not concerned

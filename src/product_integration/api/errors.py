@@ -117,6 +117,10 @@ class ProductAPIErrorCategory:
     INVALID_REQUEST = "INVALID_REQUEST"
     CLARIFICATION_REFUSED = "CLARIFICATION_REFUSED"
     VIR_INPUT_REFUSED = "VIR_INPUT_REFUSED"
+    # Bloc 3B: VIR no longer keeps the case's identification (its retention
+    # ended, or its store was restored to an earlier state) -> 410; the case
+    # and the results CPL keeps are not affected.
+    VIR_RESULT_NOT_KEPT = "VIR_RESULT_NOT_KEPT"
     UNEXPECTED = "UNEXPECTED"
 
 
@@ -139,6 +143,7 @@ _CATEGORY_TO_STATUS: dict[str, int] = {
     ProductAPIErrorCategory.INVALID_REQUEST: 422,
     ProductAPIErrorCategory.CLARIFICATION_REFUSED: 422,
     ProductAPIErrorCategory.VIR_INPUT_REFUSED: 422,
+    ProductAPIErrorCategory.VIR_RESULT_NOT_KEPT: 410,
     ProductAPIErrorCategory.UNEXPECTED: 500,
 }
 

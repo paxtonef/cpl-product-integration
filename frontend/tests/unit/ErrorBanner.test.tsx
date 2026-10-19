@@ -21,4 +21,12 @@ describe('ErrorBanner', () => {
     const orchestrationText = screen.getByRole('alert').textContent
     expect(technicalText).not.toEqual(orchestrationText)
   })
+
+  it('says an identification VIR no longer keeps is not kept, never a temporary failure (bloc 3B)', () => {
+    render(<ErrorBanner error={new ApiError('VIR_RESULT_NOT_KEPT', 'raw backend detail', 410)} />)
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(/no longer kept/i)
+    expect(alert).toHaveTextContent(/confirmed results are not affected/i)
+    expect(alert).not.toHaveTextContent(/temporarily unavailable/i)
+  })
 })

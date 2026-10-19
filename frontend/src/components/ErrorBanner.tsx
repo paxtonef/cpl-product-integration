@@ -21,6 +21,9 @@ const CATEGORY_MESSAGE: Record<string, string> = {
   [ApiErrorCategory.INVALID_REQUEST]: 'This request is not valid. Please check what you entered.',
   [ApiErrorCategory.CLARIFICATION_REFUSED]: 'Please answer only the questions shown for your vehicle.',
   [ApiErrorCategory.VIR_INPUT_REFUSED]: 'This value was not accepted for this field.',
+  [ApiErrorCategory.VIR_RESULT_NOT_KEPT]:
+    'The details of this vehicle identification are no longer kept (retention period ended). Your case and its ' +
+    'confirmed results are not affected.',
   [ApiErrorCategory.UNEXPECTED]: 'Something went wrong. Please try again.',
 }
 
