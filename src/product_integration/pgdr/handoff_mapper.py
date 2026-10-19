@@ -79,6 +79,59 @@ assert _PGDR_STATUS_VALUES <= _VIR_STATUS_VALUES, (
 assert len(_REFUSED_VIR_STATUS_VALUES) == 3, f"Expected exactly 3 refused VIR-only statuses, got: {sorted(_REFUSED_VIR_STATUS_VALUES)}"
 
 
+# --- What PGDR receives: an explicit whitelist (preparation for production,
+# block 4) --------------------------------------------------------------------
+# Technical characteristics only, unknown values (None) included, plus VIR's
+# own provenance flags. Never the vehicle identifiers (plate, VIN,
+# registration country: CanonicalVehicleIdentity.identifiers) nor the
+# registration-document date (first_registration_date): PGDR's diagnostic
+# and applicability logic does not read them (pgdr 7b863c0 --
+# VehicleApplicabilityContext.from_pgdr_vehicle_identity_dict always sets
+# first_registration_date=None; the identity is otherwise only spread into
+# MachineIdentityContext.attributes). The objects stay linked through the
+# opaque VIR resolution_id. A new field reaches PGDR only by being added here.
+PGDR_VEHICLE_IDENTITY_FIELDS: dict[str, Optional[tuple[str, ...]]] = {
+    "manufacturer": None, "brand": None, "model": None, "generation": None, "variant": None, "trim": None,
+    "production": ("year", "start_date", "end_date"),
+    "body": ("type", "door_count"),
+    "fuel": ("primary_type",),
+    "engine": ("commercial_name", "engine_code", "displacement_cc", "cylinders", "power_kw", "power_hp"),
+    "transmission": ("type", "gears"),
+    "drivetrain": None, "version": None, "model_year": None, "cluster_type": None,
+    "simulated": None, "user_declared": None,
+}
+# The flat keys of VIR's DiagnosticIdentityContext.vehicle (VIR's
+# VEHICLE_FIELD_PATHS), less first_registration_date.
+PGDR_DIAGNOSTIC_CONTEXT_FIELDS = (
+    "manufacturer", "model", "production_year", "fuel_type", "engine_name", "power_kw", "generation", "version",
+    "model_year", "cluster_type", "transmission_type", "engine_code", "transmission_gears", "drivetrain",
+)
+
+
+_WITHHELD_ROOTS = frozenset({"identifiers", "first_registration_date"})
+
+
+def _whitelisted_identity(dumped: dict) -> dict:
+    """Copies only PGDR_VEHICLE_IDENTITY_FIELDS (and, for a nested group,
+    only its listed sub-fields) from a dumped CanonicalVehicleIdentity."""
+    kept: dict = {}
+    for key, sub_fields in PGDR_VEHICLE_IDENTITY_FIELDS.items():
+        if key not in dumped:
+            continue
+        value = dumped[key]
+        if sub_fields is not None and isinstance(value, dict):
+            value = {sub: value.get(sub) for sub in sub_fields}
+        kept[key] = value
+    return kept
+
+
+def _about_withheld_field(path: str) -> bool:
+    """A field path naming a field PGDR never receives (identifiers,
+    first_registration_date): not reported to PGDR as unresolved or
+    contradictory, since PGDR has no such field."""
+    return path.replace("[", ".").split(".", 1)[0] in _WITHHELD_ROOTS
+
+
 def _map_status(vir_status: VIRResolutionStatus) -> PGDRResolutionStatus:
     """The single implementation of the admissibility rule (§8/§9). Raises
     VIRPGDRHandoffError for exactly the 3 VIR-only statuses; never
@@ -154,7 +207,8 @@ def map_diagnostic_context(context: VIRDiagnosticIdentityContext) -> PGDRVehicle
         # a DIRECT pass-through, not a transform, once extracted from the dict.
         confidence = PGDRConfidenceScore(score=dc["confidence_score"], level=dc["confidence_level"])
 
-    unresolved_fields = list(dc.get("unresolved_fields", []))
+    unresolved_fields = [f for f in dc.get("unresolved_fields", []) if not _about_withheld_field(f)]
+    vehicle = {key: context.vehicle[key] for key in PGDR_DIAGNOSTIC_CONTEXT_FIELDS if key in context.vehicle}
 
     # diagnostic_constraints only ever carries a boolean has_contradictions
     # flag on this path (confirmed directly against VIR's HandoffBuilder
@@ -163,7 +217,7 @@ def map_diagnostic_context(context: VIRDiagnosticIdentityContext) -> PGDRVehicle
 
     return _build_pgdr_context(
         resolution_id=context.resolution_id, pgdr_status=pgdr_status,
-        vehicle_identity=context.vehicle, confidence=confidence,
+        vehicle_identity=vehicle, confidence=confidence,
         unresolved_fields=unresolved_fields, contradictions=contradictions,
     )
 
@@ -192,8 +246,12 @@ def map_resolution(resolution: VIRVehicleIdentityResolution) -> PGDRVehicleIdent
             _withhold(vehicle_identity, path)
             if path not in unresolved_fields:
                 unresolved_fields.append(path)
+        vehicle_identity = _whitelisted_identity(vehicle_identity)
+    unresolved_fields = [f for f in unresolved_fields if not _about_withheld_field(f)]
 
-    contradictions = [_flatten_contradiction(c) for c in resolution.contradictions]
+    contradictions = [
+        _flatten_contradiction(c) for c in resolution.contradictions if not _about_withheld_field(c.field_path)
+    ]
 
     return _build_pgdr_context(
         resolution_id=resolution.resolution_id, pgdr_status=pgdr_status,

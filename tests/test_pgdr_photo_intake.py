@@ -58,6 +58,10 @@ async def test_real_vir_resolution_becomes_a_pgdr_photo_intake_through_map_resol
         assert intake.reference_set.applicability_status.value == "reference_set_available"
         assert len(intake.reference_set.entries) == 11
         assert not intake.consent_media_analysis and not pgdr_web._sessions   # no PGDR session before the photo
+        # Block 4 (preparation for production): the plate never reaches PGDR's
+        # photo intake -- nor, therefore, any vision context built from it.
+        assert "AB-123-CD" not in intake.identity.model_dump_json()
+        assert "identifiers" not in (intake.identity.vehicle_identity or {})
 
         # The handoff is authenticated: a wrong token creates nothing.
         monkeypatch.setenv(photo_intake.PGDR_HANDOFF_TOKEN_ENV, "wrong")
