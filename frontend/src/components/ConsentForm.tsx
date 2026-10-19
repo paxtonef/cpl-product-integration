@@ -1,3 +1,6 @@
+// No photo can be analysed in this installation (block 5: no qualified,
+// authorised vision provider), so no media-analysis consent is asked;
+// mediaAnalysisAllowed stays false.
 export interface ConsentValue {
   mediaAnalysisAllowed: boolean
   reportStorageAllowed: boolean
@@ -15,16 +18,6 @@ export function ConsentForm({
   return (
     <fieldset>
       <legend>Consent</legend>
-      <div>
-        <input
-          id="consentMediaAnalysis"
-          type="checkbox"
-          checked={value.mediaAnalysisAllowed}
-          onChange={(event) => onChange({ ...value, mediaAnalysisAllowed: event.target.checked })}
-          disabled={disabled}
-        />
-        <label htmlFor="consentMediaAnalysis">I consent to media analysis, if provided.</label>
-      </div>
       <div>
         <input
           id="consentReportStorage"

@@ -55,6 +55,9 @@ export function ComplaintForm({
           required
         />
       </div>
+      <p role="note">
+        Photo analysis is not available. Describe the problem in your own words; no photo is analysed.
+      </p>
       <ConsentForm value={consent} onChange={setConsent} disabled={status === 'submitting'} />
       <button type="submit" disabled={status === 'submitting'}>
         {status === 'submitting' ? 'Starting…' : 'Start diagnostic'}
