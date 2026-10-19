@@ -8,15 +8,15 @@ import { registerAndResolveVehicle, startDiagnostic } from './helpers'
 // report's own content.
 test('F. ESCALATED: reaches terminal immediately, execution status is COMPLETED, safety banner shown', async ({
   page,
-  request,
 }) => {
+  // page.request carries the signed-in user's session (the API needs one).
   const caseId = await registerAndResolveVehicle(page)
   await startDiagnostic(page, 'There is smoke coming from under the hood and a burning smell.')
 
   await expect(page).toHaveURL(new RegExp(`/cases/${caseId}/result`))
   await expect(page.getByTestId('safety-banner')).toBeVisible()
 
-  const historyResponse = await request.get(`/api/cases/${caseId}/history`)
+  const historyResponse = await page.request.get(`/api/cases/${caseId}/history`)
   const history = await historyResponse.json()
   const pgdrExecution = history.executions.find((e: { runner_type: string }) => e.runner_type === 'PGDR')
   expect(pgdrExecution.execution_status).toBe('COMPLETED') // never FAILED
