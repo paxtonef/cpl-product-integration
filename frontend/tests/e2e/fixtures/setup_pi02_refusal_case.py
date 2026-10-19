@@ -41,7 +41,8 @@ def _cookie(response: httpx.Response) -> str:
 
 def main() -> None:
     api_base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
-    client = httpx.Client(base_url=api_base_url)
+    # E2E_API_CA: certificate of a self-signed HTTPS test entry point, if any.
+    client = httpx.Client(base_url=api_base_url, verify=os.environ.get("E2E_API_CA") or True)
     # Every PI-05 route needs a session: sign in as journey user A (the same
     # fictitious account the browser uses), carrying the cookie explicitly.
     login = client.post("/auth/login", json={"login": os.environ["E2E_LOGIN_A"], "password": os.environ["E2E_PASSWORD_A"]})
