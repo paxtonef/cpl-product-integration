@@ -48,8 +48,12 @@ from typing import Optional
 
 from pgdr.enums import ResolutionStatus as PGDRResolutionStatus
 from pgdr.models import ConfidenceScore as PGDRConfidenceScore
+from pgdr.models import FieldProvenance as PGDRFieldProvenance
 from pgdr.models import VehicleIdentityContext as PGDRVehicleIdentityContext
-from vir.domain.driver_confirmation import CONFIRMABLE_FIELDS, USER_CONFIRMED, epistemic_status
+from vir.domain.driver_confirmation import (
+    CONFIRMABLE_FIELDS, USER_CONFIRMED, epistemic_status, get_path, supports_value,
+)
+from vir.domain.enums import ProvenanceMethod
 from vir.domain.enums import ResolutionStatus as VIRResolutionStatus
 from vir.domain.models import Contradiction as VIRContradiction
 from vir.domain.models import DiagnosticIdentityContext as VIRDiagnosticIdentityContext
@@ -153,6 +157,7 @@ def _build_pgdr_context(
     *, resolution_id: str, pgdr_status: PGDRResolutionStatus,
     vehicle_identity: Optional[dict], confidence: Optional[PGDRConfidenceScore],
     unresolved_fields: list[str], contradictions: list[str],
+    field_provenance: Optional[dict] = None, vehicle_ref: Optional[str] = None,
 ) -> PGDRVehicleIdentityContext:
     """The single PGDR-object construction point both public entry points
     use — no duplicate construction logic anywhere in this module. This is
@@ -166,6 +171,8 @@ def _build_pgdr_context(
         vehicle_identity=vehicle_identity,
         unresolved_fields=unresolved_fields,
         contradictions=contradictions,
+        field_provenance=field_provenance or {},
+        vehicle_ref=vehicle_ref,
     )
 
 
@@ -179,6 +186,49 @@ def _confirmation_only_fields(resolution: VIRVehicleIdentityResolution) -> list[
         path for path in CONFIRMABLE_FIELDS
         if path in evidence and epistemic_status(evidence[path].sources, evidence[path].resolved_value) == USER_CONFIRMED
     )
+
+
+# The fields whose provenance PGDR receives: the identity keys a notice is resolved on, and the fields a
+# driver may confirm. Each status is VIR's own (epistemic_status), never recomputed nor raised here.
+PROVENANCE_FIELDS = tuple(dict.fromkeys(("manufacturer", "model", "generation", *CONFIRMABLE_FIELDS)))
+
+
+def _supporting(source, value) -> bool:
+    """A source that supports the retained value (VIR's own rule: a divergent source, a source consulted
+    without value, or the driver's confirmation of another value support nothing)."""
+    if source.role in ("divergent", "consulted_without_value"):
+        return False
+    return source.method != ProvenanceMethod.USER_CONFIRMATION or supports_value(source, value)
+
+
+def _field_provenance(resolution: VIRVehicleIdentityResolution) -> dict[str, PGDRFieldProvenance]:
+    """VIR V1 provenance, handed on as it is: per field, VIR's epistemic status, the value it is about and the
+    sources supporting it (identifier, method, role, declaration and simulation flags -- never a reported
+    value). A confirmation stays user_confirmation from a user source; nothing is promoted. A field VIR keeps
+    no evidence for (a resolution stored before provenance existed) gets no entry: no qualification added."""
+    if resolution.vehicle_identity is None:
+        return {}
+    evidence = {fe.field_path: fe for fe in resolution.field_evidence}
+    contradicted = {c.field_path for c in resolution.contradictions}
+    out: dict[str, PGDRFieldProvenance] = {}
+    for path in PROVENANCE_FIELDS:
+        value = get_path(resolution.vehicle_identity, path)
+        value = getattr(value, "value", value)
+        fe = evidence.get(path)
+        sources = [s for s in (fe.sources if fe else []) if _supporting(s, value)]
+        if path in contradicted:
+            status = "contradictory"
+        elif value is None:
+            status = "unknown"
+        else:
+            status = epistemic_status(fe.sources, fe.resolved_value) if fe else None
+            if status is None:
+                continue
+        out[path] = PGDRFieldProvenance(
+            status=status, value=None if status == "unknown" else value,
+            sources=[{"source_id": s.source_id, "method": getattr(s.method, "value", s.method), "role": s.role,
+                      "user_declared": s.user_declared, "simulated": s.simulated} for s in sources])
+    return out
 
 
 def _withhold(vehicle_identity: dict, path: str) -> None:
@@ -222,12 +272,16 @@ def map_diagnostic_context(context: VIRDiagnosticIdentityContext) -> PGDRVehicle
     )
 
 
-def map_resolution(resolution: VIRVehicleIdentityResolution) -> PGDRVehicleIdentityContext:
+def map_resolution(resolution: VIRVehicleIdentityResolution, *,
+                   vehicle_ref: Optional[str] = None) -> PGDRVehicleIdentityContext:
     """Richer path (§12/§20): full confidence object and real
     per-contradiction detail, both genuinely available only on
     VehicleIdentityResolution. Pure, deterministic, no I/O. Raises
     VIRPGDRHandoffError if `resolution.resolution_status` is one of the 3
-    VIR-only statuses."""
+    VIR-only statuses.
+
+    vehicle_ref: the product's opaque reference of the vehicle (the CPL
+    asset), never a VIN nor a plate; given by the caller that knows it."""
     pgdr_status = _map_status(resolution.resolution_status)
 
     confidence = PGDRConfidenceScore(score=resolution.confidence.score, level=resolution.confidence.level.value)
@@ -237,9 +291,14 @@ def map_resolution(resolution: VIRVehicleIdentityResolution) -> PGDRVehicleIdent
     )
 
     # VIR V1 driver confirmations: a value resting on a confirmation alone is
-    # never handed to PGDR as a known value (it is not a decode); PGDR sees it
-    # as unknown. Status (VIR already caps it at provisionally_resolved) and
+    # never put among the admissible values (vehicle_identity, which every
+    # existing PGDR consumer reads as known): it is listed in unresolved_fields
+    # as before, and reaches PGDR in field_provenance with its value and its
+    # real provenance (user_confirmed, user_confirmation, source
+    # driver_confirmation) -- distinguished from an unknown field, never
+    # promoted. Status (VIR already caps it at provisionally_resolved) and
     # every decoded or concordantly-confirmed value are unchanged.
+    field_provenance = _field_provenance(resolution)
     unresolved_fields = list(resolution.unresolved_fields)
     if vehicle_identity is not None:
         for path in _confirmation_only_fields(resolution):
@@ -257,4 +316,6 @@ def map_resolution(resolution: VIRVehicleIdentityResolution) -> PGDRVehicleIdent
         resolution_id=resolution.resolution_id, pgdr_status=pgdr_status,
         vehicle_identity=vehicle_identity, confidence=confidence,
         unresolved_fields=unresolved_fields, contradictions=contradictions,
+        field_provenance={p: v for p, v in field_provenance.items() if not _about_withheld_field(p)},
+        vehicle_ref=vehicle_ref,
     )

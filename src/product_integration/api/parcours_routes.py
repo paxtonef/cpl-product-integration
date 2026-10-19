@@ -37,7 +37,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.db.engine import session_scope
@@ -86,10 +86,45 @@ class NoticeResultsResponse(BaseModel):
     results: list[dict]   # product_integration.pgdr.notice_results.build_record, plus record_id and recorded_at
 
 
+class NoticeIdentityKey(BaseModel):
+    """One identity key as PGDR compared it, with VIR's provenance label (« confirmé par le conducteur »...)."""
+    key: str
+    label: str
+    value: Optional[str] = None
+    provenance: str
+    provenance_label: str
+
+
 class NoticeParcoursResponse(BaseModel):
     status: str                    # "opened" or PGDR's refusal (pgdr.v1_parcours._open_parcours)
     page: Optional[str] = None     # with "opened": the page path under the API prefix
     message: Optional[str] = None  # with a refusal: PGDR's own explanation
+    # With a refusal (pgdr.v1_applicabilite): PGDR's precise reasons, what remains to be checked, the next
+    # useful action, and the identity keys compared with their provenance. Relayed as PGDR wrote them.
+    reasons: list[str] = Field(default_factory=list)
+    to_verify: list[str] = Field(default_factory=list)
+    next_action: Optional[str] = None
+    identity: list[NoticeIdentityKey] = Field(default_factory=list)
+
+
+_MAX_RELAYED_LINES, _MAX_LINE = 12, 600
+
+
+def _lines(value) -> list[str]:
+    return [x[:_MAX_LINE] for x in value[:_MAX_RELAYED_LINES] if isinstance(x, str)] if isinstance(value, list) else []
+
+
+def _refusal(status: str, body: dict) -> NoticeParcoursResponse:
+    identity = []
+    for k in body.get("identity") or []:
+        try:
+            identity.append(NoticeIdentityKey.model_validate(k))
+        except ValueError:
+            continue
+    next_action = body.get("next_action")
+    return NoticeParcoursResponse(status=status, message=body.get("message"), reasons=_lines(body.get("reasons")),
+                                  to_verify=_lines(body.get("to_verify")), identity=identity[:_MAX_RELAYED_LINES],
+                                  next_action=next_action[:_MAX_LINE] if isinstance(next_action, str) else None)
 
 
 @router.post("/cases/{case_id}/notice-parcours", response_model=NoticeParcoursResponse)
@@ -99,13 +134,14 @@ async def open_notice_parcours_route(
     registry: NoticeParcoursRegistry = Depends(get_notice_registry),
 ):
     with session_scope() as session:
-        owned_case(session, principal, case_id)
+        case = owned_case(session, principal, case_id)
+        vehicle_ref = str(case.asset_id) if case.asset_id is not None else None   # opaque: never a VIN nor a plate
         execution, artifact = _find_vir_execution_and_artifact(session, case_id)
         payload = dict(artifact.payload)
         vir = {"vir_execution_id": execution.execution_id, "vir_artifact_id": artifact.artifact_id,
                "vir_resolution_id": payload.get("resolution_id")}
     try:
-        identity = map_resolution(VIRVehicleIdentityResolution.model_validate(payload))
+        identity = map_resolution(VIRVehicleIdentityResolution.model_validate(payload), vehicle_ref=vehicle_ref)
     except VIRPGDRHandoffError:
         # A VIR result PGDR cannot accept: no notice is ever assumed.
         return NoticeParcoursResponse(status="vehicle_identity_insufficient",
@@ -123,7 +159,7 @@ async def open_notice_parcours_route(
         registry.put(pid, ParcoursOwner(case_id=case_id, contact_id=principal.contact_id, **vir))
         return NoticeParcoursResponse(status="opened", page=f"/v1?p={pid}")
     if status in PGDR_REFUSALS:
-        return NoticeParcoursResponse(status=status, message=body.get("message"))
+        return _refusal(status, body)
     raise ProductAPIError(ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "PGDR opened no notice parcours")
 
 

@@ -268,11 +268,25 @@ export interface ClarificationQuestionPayload {
 }
 
 // POST /cases/{case_id}/notice-parcours (product_integration.api.parcours_routes).
+// One identity key as PGDR compared it, with VIR's provenance label (e.g. « confirmé par le conducteur »).
+export interface NoticeIdentityKey {
+  key: string
+  label: string
+  value?: string | null
+  provenance: string
+  provenance_label: string
+}
+
 export interface NoticeParcoursResponse {
   status: string // "opened", or PGDR's refusal: vehicle_identity_insufficient, notice_unavailable,
   // vehicle_not_supported, applicability_not_confirmed
   page?: string | null
   message?: string | null
+  // With a refusal (pgdr.v1_applicabilite): the precise reasons, what remains to be checked, the next action.
+  reasons?: string[]
+  to_verify?: string[]
+  next_action?: string | null
+  identity?: NoticeIdentityKey[]
 }
 
 // GET /cases/{case_id}/notice-results (bloc 3A): the confirmed results of the notice parcours, kept in CPL and

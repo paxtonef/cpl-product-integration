@@ -28,6 +28,34 @@ describe('NoticeParcoursLauncher', () => {
     expect(screen.getByRole('button', { name: 'Open the manufacturer notice' })).toBeEnabled()
   })
 
+  it('shows the reasons, the provenance of each key, what remains to check and the next action', async () => {
+    vi.spyOn(apiClient, 'openNoticeParcours').mockResolvedValue({
+      status: 'applicability_not_confirmed', page: null,
+      message: "L'applicabilité de la notice à ce véhicule n'est pas confirmée.",
+      reasons: ['La génération (« X1 ») repose sur la seule confirmation du conducteur : cela ne suffit pas à rendre la notice applicable.'],
+      to_verify: ['Comparer la marque, le modèle et la génération du véhicule avec le texte imprimé de la notice.'],
+      next_action: "Le propriétaire de la notice enregistre une attestation d'applicabilité. Les contenus déjà validés de la notice n'ont pas à être refaits.",
+      identity: [
+        { key: 'model', label: 'Le modèle', value: 'Testmobile', provenance: 'provider_not_established',
+          provenance_label: 'fourni par une source, non établi' },
+        { key: 'generation', label: 'La génération', value: 'X1', provenance: 'user_confirmed',
+          provenance_label: 'confirmé par le conducteur, sans vérification indépendante' },
+      ],
+    })
+    const go = vi.fn()
+    render(<NoticeParcoursLauncher caseId="case-1" go={go} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open the manufacturer notice' }))
+    const refusal = await screen.findByTestId('notice-refusal')
+    expect(refusal).toHaveTextContent("L'applicabilité de la notice à ce véhicule n'est pas confirmée.")
+    expect(screen.getByTestId('notice-refusal-identity')).toHaveTextContent(
+      'La génération : X1 (confirmé par le conducteur, sans vérification indépendante)')
+    expect(screen.getByTestId('notice-refusal-identity')).not.toHaveTextContent('établi (décodage')
+    expect(screen.getByTestId('notice-refusal-reasons')).toHaveTextContent('seule confirmation du conducteur')
+    expect(screen.getByTestId('notice-refusal-to-verify')).toHaveTextContent('texte imprimé de la notice')
+    expect(screen.getByTestId('notice-refusal-next')).toHaveTextContent("déjà validés de la notice n'ont pas à être refaits")
+    expect(go).not.toHaveBeenCalled()
+  })
+
   it('shows a technical failure without any detail', async () => {
     vi.spyOn(apiClient, 'openNoticeParcours').mockRejectedValue(
       new ApiError('PGDR_TECHNICAL_FAILURE', 'PGDR notice service unavailable', 502),

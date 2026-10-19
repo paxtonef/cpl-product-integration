@@ -315,8 +315,10 @@ async def test_f_no_image_recognised_keeps_the_existing_safety_outcome(app, pgdr
 @pytest.mark.asyncio
 async def test_g_provisional_identity_is_refused_and_no_notice_is_assumed(app, pgdr, user_a):
     r = await open_parcours(user_a, await case(user_a, vin=PROVISIONAL_VIN))
-    assert r == {"status": "vehicle_identity_insufficient", "page": None,
-                 "message": "L'identité du véhicule n'est pas établie par VIR."}
+    assert (r["status"], r["page"], r["message"]) == (
+        "vehicle_identity_insufficient", None, "L'identité du véhicule n'est pas établie par VIR.")
+    # Passe provenance: PGDR now also says which key is missing and the next useful action.
+    assert any("n'est pas connu" in x for x in r["reasons"]) and r["next_action"]
     assert v1._parcours == {} and len(app.state.notice_registry) == 0
 
 
@@ -336,8 +338,11 @@ async def test_g_notice_insufficient_is_refused(app, pgdr, user_a, setup, status
 @pytest.mark.asyncio
 async def test_g_a_driver_confirmed_value_is_never_promoted_to_a_decode(monkeypatch, vir_store, pgdr, tmp_path):
     """Real VIR (fake provider transports) leaves the generation unknown; the
-    driver confirms one that matches a notice exactly. PGDR still receives it
-    as unknown and opens nothing: no notice is chosen on a confirmation alone."""
+    driver confirms one that matches a notice exactly. PGDR receives it as a
+    confirmed value (field_provenance, user_confirmed), never among the known
+    values, and opens nothing: no notice is chosen on a confirmation alone.
+    Passe provenance: refused as applicability_not_confirmed with its reason
+    (bloc 3A: vehicle_identity_insufficient, the value being withheld)."""
     from vir.adapters.sqlite_persistence_adapter import SQLitePersistenceAdapter
     import vir.api.routes as vir_routes
     for name, value in support.FICTIVE_ENV.items():
@@ -353,10 +358,12 @@ async def test_g_a_driver_confirmed_value_is_never_promoted_to_a_decode(monkeypa
     r = await client.post(f"/cases/{case_id}/vir/confirmations", json={"field_path": "generation", "value": "G-FICTIVE"})
     assert r.status_code == 200, r.text
     r = await open_parcours(client, case_id)
-    assert r["status"] == "vehicle_identity_insufficient" and r["page"] is None
+    assert r["status"] == "applicability_not_confirmed" and r["page"] is None
+    assert any("seule confirmation du conducteur" in x for x in r["reasons"])
     (handoff,) = pgdr_calls(pgdr, "/api/v1/vir-handoff")
     sent = json.loads(handoff)
     assert sent["vehicle_identity"]["generation"] is None and "generation" in sent["unresolved_fields"]
+    assert sent["field_provenance"]["generation"]["status"] == "user_confirmed"
     assert support.VIN.encode() not in handoff
     assert v1._parcours == {}
     await client.aclose()

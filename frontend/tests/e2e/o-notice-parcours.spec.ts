@@ -146,6 +146,11 @@ test('O4. identity not established by VIR: PGDR opens nothing and says why', asy
   const caseId = new URL(page.url()).pathname.split('/')[2]
   await page.goto(`/cases/${caseId}`)
   await page.getByRole('button', { name: 'Open the manufacturer notice' }).click()
-  await expect(page.getByTestId('notice-refusal')).toHaveText("L'identité du véhicule n'est pas établie par VIR.")
+  // Passe provenance: the refusal also shows the keys compared, PGDR's reasons and the next action.
+  await expect(page.getByTestId('notice-refusal').locator('p').first()).toHaveText(
+    "L'identité du véhicule n'est pas établie par VIR.",
+  )
+  await expect(page.getByTestId('notice-refusal-reasons')).toContainText("Le modèle du véhicule n'est pas connu")
+  await expect(page.getByTestId('notice-refusal-next')).toContainText('ne peuvent pas être confirmés par le conducteur')
   await expect(page).toHaveURL(new RegExp(`/cases/${caseId}$`))
 })

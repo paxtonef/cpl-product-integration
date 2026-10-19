@@ -11,9 +11,9 @@ fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Lis
 
 | Composant | Révision | Remarque |
 |---|---|---|
-| PI (`cpl-product-integration`) | branche `pi-3b-conservation-purge` (depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
+| PI (`cpl-product-integration`) | branche `pi-fiat-provenance` (depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
-| PGDR | `1c5a5cc041f66a959e5bb65918ca7e366223188e` (`v1-3b-reception`, depuis `v1-3a-securite` @ `48d5da4`, depuis `v1-propositions-photo` @ `7302c62`) | statut d'enregistrement du produit affiché sous la restitution ; marché de la notice documenté non vérifiable |
+| PGDR | `79db82843f391e307bff782454dd08662c753713` (`v1-fiat-provenance`, depuis `v1-3b-reception` @ `1c5a5cc`, depuis `v1-3a-securite` @ `48d5da4`) | provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
 | CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse ; schéma non modifié depuis |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
@@ -130,6 +130,19 @@ production** : le seul transport de tri existant est un faux transport d'essai, 
 n'accepte que pour un essai signalé (`PGDR_V1_ESSAI_TRI=1`, bandeau permanent) et que
 `scripts/lancer_montage.sh` refuse en mode production (comme `PGDR_V1_DEV_TRIAL`) ; sans lui,
 la photo reste sur l'appareil et le catalogue complet est affiché avec son explication.
+
+Applicabilité de la notice (PGDR `docs/exigences/PROVENANCE_ET_APPLICABILITE_V1.md`) : PI transmet
+à PGDR la provenance de chaque champ telle que VIR la donne. Une valeur confirmée par le conducteur
+reste « confirmé par le conducteur » et n'ouvre jamais seule une notice. PI transmet aussi la référence
+opaque du véhicule (l'actif CPL du dossier, jamais un VIN ni une plaque). Deux fichiers facultatifs
+du propriétaire de la notice, hors dépôt, sont transmis tels quels à PGDR :
+- `PGDR_V1_APPLICABILITE` : attestations d'applicabilité, chacune limitée à un véhicule et à une
+  version de notice ;
+- `PGDR_V1_RATTACHEMENT` : rattachement des validations quand seules les métadonnées d'applicabilité
+  ont changé.
+
+Un refus affiché dans le dossier donne le motif de PGDR, les clés comparées avec leur provenance, ce
+qui reste à vérifier et la prochaine étape.
 
 Facultatifs : `PI_SESSION_IDLE_MINUTES` (30), `PI_SESSION_MAX_HOURS` (12),
 `VIR_PROVIDER_MODE` (`simulated` ; seul mode démontré). `PI_COOKIE_SECURE=0` est refusé en

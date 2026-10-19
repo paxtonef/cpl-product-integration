@@ -1,11 +1,52 @@
 import { useEffect, useState } from 'react'
 import { apiClient, apiPageUrl } from '../api/client'
 import { ApiError } from '../api/errors'
-import type { NoticeResult, NoticeTextSegment } from '../api/types'
+import type { NoticeParcoursResponse, NoticeResult, NoticeTextSegment } from '../api/types'
 import { ErrorBanner } from './ErrorBanner'
 
 function plain(segments: NoticeTextSegment[]): string {
   return segments.map((s) => s.text ?? '').join('')
+}
+
+// PGDR's refusal as PGDR worded it (French): its reason, the identity keys compared with their provenance
+// (« confirmé par le conducteur » is never shown as established), what remains to be checked and the next
+// useful action. Nothing is assumed beyond it.
+function Refusal({ refusal }: { refusal: NoticeParcoursResponse }) {
+  const identity = refusal.identity ?? []
+  const reasons = refusal.reasons ?? []
+  const toVerify = refusal.to_verify ?? []
+  return (
+    <div role="status" lang="fr" data-testid="notice-refusal">
+      <p>{refusal.message ?? 'No manufacturer notice can be shown for this vehicle.'}</p>
+      {identity.length > 0 && (
+        <ul aria-label="Identité comparée" data-testid="notice-refusal-identity">
+          {identity.map((k) => (
+            <li key={k.key}>
+              {k.label} : {k.value ?? '—'} ({k.provenance_label})
+            </li>
+          ))}
+        </ul>
+      )}
+      {reasons.length > 0 && (
+        <ul aria-label="Motifs" data-testid="notice-refusal-reasons">
+          {reasons.map((r) => (
+            <li key={r}>{r}</li>
+          ))}
+        </ul>
+      )}
+      {toVerify.length > 0 && (
+        <>
+          <p>Reste à vérifier :</p>
+          <ul aria-label="Reste à vérifier" data-testid="notice-refusal-to-verify">
+            {toVerify.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {refusal.next_action && <p data-testid="notice-refusal-next">Prochaine étape : {refusal.next_action}</p>}
+    </div>
+  )
 }
 
 // One confirmed result, as kept: the notice edition, the driver's own selection and the exact texts.
@@ -61,7 +102,7 @@ export function NoticeParcoursLauncher({
   go?: (url: string) => void
 }) {
   const [status, setStatus] = useState<'ready' | 'opening'>('ready')
-  const [refusal, setRefusal] = useState<string | null>(null)
+  const [refusal, setRefusal] = useState<NoticeParcoursResponse | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
   const [kept, setKept] = useState<NoticeResult[] | null>(null)
   const [keptUnavailable, setKeptUnavailable] = useState(false)
@@ -87,7 +128,7 @@ export function NoticeParcoursLauncher({
         go(apiPageUrl(result.page))
         return
       }
-      setRefusal(result.message ?? 'No manufacturer notice can be shown for this vehicle.')
+      setRefusal(result)
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError('UNEXPECTED', 'Something went wrong.', 500))
     }
@@ -102,11 +143,7 @@ export function NoticeParcoursLauncher({
         says. Images proposed from your photo are only an aid: you choose and confirm.
       </p>
       {error && <ErrorBanner error={error} />}
-      {refusal && (
-        <p role="status" lang="fr" data-testid="notice-refusal">
-          {refusal}
-        </p>
-      )}
+      {refusal && <Refusal refusal={refusal} />}
       <p>Opening the notice always starts a new parcours from the beginning.</p>
       <button type="button" onClick={open} disabled={status === 'opening'}>
         Open the manufacturer notice

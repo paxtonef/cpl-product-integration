@@ -2,11 +2,12 @@
 
 VIR V1 lets a driver confirmation fill an empty identity field, with
 provenance method "user_confirmation" — never a decode, never a provider
-value (docs/CONFIRMATION_CONDUCTEUR.md). PGDR's VehicleIdentityContext has
-no provenance slot, so PI-02's map_resolution() must not hand PGDR a value
-supported by a confirmation alone as if it were known: such a field reaches
-PGDR as unknown (None, listed in unresolved_fields). A decoded value, alone
-or confirmed concordantly, is unchanged.
+value (docs/CONFIRMATION_CONDUCTEUR.md). PI-02's map_resolution() must not
+hand PGDR a value supported by a confirmation alone as if it were known: such
+a field stays out of vehicle_identity (None, listed in unresolved_fields) and
+reaches PGDR, since the provenance pass, in field_provenance as user_confirmed
+(tests/test_provenance_applicabilite.py). A decoded value, alone or confirmed
+concordantly, is unchanged.
 
 The second class drives the real chain: VIR's app (ASGI) -> PI-01 client and
 mirror schema -> CPL artifact payload -> VIR model -> map_resolution(), so
