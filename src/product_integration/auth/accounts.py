@@ -11,11 +11,24 @@ CSRF token of a session is derived from its session token (it cannot be
 computed without the HttpOnly cookie), so it can be served again after a
 page reload without being stored. Expiry: an idle timeout and an absolute
 lifetime, both enforced server-side.
+
+Passwords are changed by their owner (current password required) or reset by
+the operator command; either way only the PI credential changes: the CPL
+Account and Contact keep their ids and status, and every web session of the
+account is revoked in the same transaction.
+
+Failed password attempts are throttled per (login, origin), per origin and
+per login (pi_auth.login_throttle, digests only). A guessing origin is
+stopped after MAX_FAILED_ATTEMPTS on one login without locking that login
+from any other origin; an origin trying many logins is stopped after
+ORIGIN_MAX_FAILURES; guessing one login from many origins is stopped after
+ACCOUNT_MAX_FAILURES. Every lock is temporary (LOCKOUT).
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -33,11 +46,18 @@ from app.cpl.identity.contacts import create_contact
 from app.cpl.identity.outcomes import OperationOutcome
 from app.db.engine import session_scope
 
-from product_integration.auth.passwords import burn_verification, check_policy, hash_password, verify_password
+from product_integration.auth.passwords import (
+    PasswordPolicyError, burn_verification, check_policy, hash_password, verify_password,
+)
+
+logger = logging.getLogger("product_integration.auth")
 
 AUTH_PROVIDER = "pi-local-password"
 _LOGIN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._@+-]{2,127}$")
-MAX_FAILED_ATTEMPTS = 5
+MAX_FAILED_ATTEMPTS = 5          # per (login, origin)
+ORIGIN_MAX_FAILURES = 50         # per origin, any login
+ACCOUNT_MAX_FAILURES = 100       # per login, any origin
+FAILURE_WINDOW = timedelta(minutes=15)
 LOCKOUT = timedelta(minutes=15)
 
 # Only the account-creation command holds this context.
@@ -49,6 +69,10 @@ _OPERATOR_AUTHORITY = AuthorityContext(
 
 class AccountError(Exception):
     pass
+
+
+class PasswordChangeRefused(Exception):
+    """Wrong current password, or too many attempts: one answer for both."""
 
 
 @dataclass(frozen=True)
@@ -148,33 +172,95 @@ def set_account_status(login: str, status: str) -> None:
         session.commit()
 
 
-def authenticate(login: str, password: str) -> Optional[NewSession]:
+# -- throttling --------------------------------------------------------------
+
+def _digest(kind: str, value: str) -> str:
+    return hashlib.sha256(f"pi-throttle-{kind}:{value}".encode("utf-8")).hexdigest()
+
+
+def _throttle_keys(login: str, origin: str) -> list[tuple[str, str, str, int]]:
+    """(scope, subject_hash, origin_hash, max failures) for one attempt."""
+    subject, place = _digest("login", login), _digest("origin", origin or "unknown")
+    return [
+        ("login_origin", subject, place, MAX_FAILED_ATTEMPTS),
+        ("origin", "", place, ORIGIN_MAX_FAILURES),
+        ("login", subject, "", ACCOUNT_MAX_FAILURES),
+    ]
+
+
+def _throttled(session, keys, now: datetime) -> bool:
+    for scope, subject, place, _ in keys:
+        locked = session.execute(text(
+            "SELECT locked_until FROM pi_auth.login_throttle "
+            "WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
+        ), {"s": scope, "h": subject, "o": place}).scalar()
+        if locked is not None and locked > now:
+            return True
+    return False
+
+
+def _record_failure(session, keys, now: datetime) -> None:
+    """Counts one failure on every key; a key reaching its maximum within
+    the window is locked for LOCKOUT and starts a new window."""
+    for scope, subject, place, maximum in keys:
+        failures = session.execute(text(
+            "INSERT INTO pi_auth.login_throttle(scope, subject_hash, origin_hash, failures, window_started_at) "
+            "VALUES (:s, :h, :o, 1, :t) "
+            "ON CONFLICT (scope, subject_hash, origin_hash) DO UPDATE SET "
+            "failures = CASE WHEN login_throttle.window_started_at <= :start THEN 1 "
+            "ELSE login_throttle.failures + 1 END, "
+            "window_started_at = CASE WHEN login_throttle.window_started_at <= :start THEN :t "
+            "ELSE login_throttle.window_started_at END "
+            "RETURNING failures"
+        ), {"s": scope, "h": subject, "o": place, "t": now, "start": now - FAILURE_WINDOW}).scalar()
+        if failures >= maximum:
+            session.execute(text(
+                "UPDATE pi_auth.login_throttle SET failures = 0, window_started_at = :t, locked_until = :u "
+                "WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
+            ), {"s": scope, "h": subject, "o": place, "t": now, "u": now + LOCKOUT})
+
+
+def _clear_failures(session, login: str, origin: str) -> None:
+    """A success from an origin clears that origin's failures on this login
+    only (never the origin-wide nor the login-wide counters)."""
+    scope, subject, place, _ = _throttle_keys(login, origin)[0]
+    session.execute(text(
+        "DELETE FROM pi_auth.login_throttle WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
+    ), {"s": scope, "h": subject, "o": place})
+
+
+def authenticate(login: str, password: str, origin: str = "unknown") -> Optional[NewSession]:
     """Returns a new session, or None. The caller answers every None the
-    same way (unknown login, wrong password, locked or disabled account)."""
+    same way (unknown login, wrong password, throttled or disabled account).
+    `origin` is the client address as seen by the server; only its digest
+    is stored."""
+    now = _now()
     try:
         login = normalize_login(login)
     except AccountError:
         burn_verification(password)
+        with session_scope() as session:
+            _record_failure(session, _throttle_keys("", origin)[1:2], now)
+            session.commit()
         return None
-    now = _now()
+    keys = _throttle_keys(login, origin)
     with session_scope() as session:
+        if _throttled(session, keys, now):
+            burn_verification(password)
+            session.commit()
+            return None
         row = session.execute(text(
-            "SELECT c.account_id, c.password_hash, c.failed_attempts, c.locked_until, a.contact_id, a.account_status "
+            "SELECT c.account_id, c.password_hash, a.contact_id, a.account_status "
             "FROM pi_auth.credentials c JOIN cpl.accounts a ON a.account_id = c.account_id "
             "WHERE c.login = :l FOR UPDATE OF c"
         ), {"l": login}).first()
         if row is None:
             burn_verification(password)
-            return None
-        if row.locked_until is not None and row.locked_until > now:
-            burn_verification(password)
+            _record_failure(session, keys, now)
+            session.commit()
             return None
         if not verify_password(password, row.password_hash):
-            attempts = row.failed_attempts + 1
-            session.execute(text(
-                "UPDATE pi_auth.credentials SET failed_attempts = :n, locked_until = :u WHERE account_id = :a"
-            ), {"n": 0 if attempts >= MAX_FAILED_ATTEMPTS else attempts,
-                "u": now + LOCKOUT if attempts >= MAX_FAILED_ATTEMPTS else None, "a": row.account_id})
+            _record_failure(session, keys, now)
             session.commit()
             return None
         if row.account_status != "ACTIVE":
@@ -182,9 +268,7 @@ def authenticate(login: str, password: str) -> Optional[NewSession]:
             return None
         token = secrets.token_urlsafe(32)
         expires = min(now + idle_timeout(), now + absolute_lifetime())
-        session.execute(text(
-            "UPDATE pi_auth.credentials SET failed_attempts = 0, locked_until = NULL WHERE account_id = :a"
-        ), {"a": row.account_id})
+        _clear_failures(session, login, origin)
         session.execute(text("UPDATE cpl.accounts SET last_authenticated_at = :t WHERE account_id = :a"),
                         {"t": now, "a": row.account_id})
         session.execute(text(
@@ -193,6 +277,76 @@ def authenticate(login: str, password: str) -> Optional[NewSession]:
         ), {"s": _sha256(token), "a": row.account_id, "t": now, "e": expires})
         session.commit()
         return NewSession(token, _csrf_for(token), Principal(row.account_id, row.contact_id, _csrf_for(token)))
+
+
+# -- password change and reset -------------------------------------------------
+
+def _store_new_password(session, account_id: UUID, password_hash: str) -> None:
+    session.execute(text(
+        "UPDATE pi_auth.credentials SET password_hash = :h, password_changed_at = now() WHERE account_id = :a"
+    ), {"h": password_hash, "a": account_id})
+
+
+def _revoke_all_sessions(session, account_id: UUID) -> int:
+    return session.execute(text("DELETE FROM pi_auth.web_sessions WHERE account_id = :a"),
+                           {"a": account_id}).rowcount
+
+
+def change_password(principal: Principal, current_password: str, new_password: str, origin: str = "unknown") -> None:
+    """The signed-in user's own change: current password required (and
+    throttled like a sign-in), new one checked against the policy and
+    different from the current one, then stored and every session of the
+    account revoked, all in one transaction. Only the PI credential changes.
+    Raises PasswordChangeRefused or PasswordPolicyError; nothing is changed
+    then. No password ever reaches a message or a log."""
+    now = _now()
+    with session_scope() as session:
+        row = session.execute(text(
+            "SELECT login, password_hash FROM pi_auth.credentials WHERE account_id = :a FOR UPDATE"
+        ), {"a": principal.account_id}).first()
+        if row is None:
+            burn_verification(current_password)
+            raise PasswordChangeRefused()
+        keys = _throttle_keys(row.login, origin)
+        if _throttled(session, keys, now):
+            burn_verification(current_password)
+            session.commit()
+            raise PasswordChangeRefused()
+        if not verify_password(current_password, row.password_hash):
+            _record_failure(session, keys, now)
+            session.commit()
+            raise PasswordChangeRefused()
+        check_policy(new_password, login=row.login)
+        if verify_password(new_password, row.password_hash):
+            raise PasswordPolicyError("the new password must differ from the current one")
+        _store_new_password(session, principal.account_id, hash_password(new_password))
+        revoked = _revoke_all_sessions(session, principal.account_id)
+        _clear_failures(session, row.login, origin)
+        session.commit()
+    logger.info("password changed by its owner account_id=%s sessions_revoked=%d", principal.account_id, revoked)
+
+
+def reset_password(login: str, new_password: str) -> UUID:
+    """Operator reset (server command, masked input): new password checked
+    against the policy, stored, every session revoked and the login's
+    throttling cleared, in one transaction. The CPL Account and Contact are
+    untouched. Returns the account id."""
+    login = normalize_login(login)
+    check_policy(new_password, login=login)
+    password_hash = hash_password(new_password)
+    with session_scope() as session:
+        account_id = session.execute(text(
+            "SELECT account_id FROM pi_auth.credentials WHERE login = :l FOR UPDATE"
+        ), {"l": login}).scalar()
+        if account_id is None:
+            raise AccountError("unknown login")
+        _store_new_password(session, account_id, password_hash)
+        revoked = _revoke_all_sessions(session, account_id)
+        session.execute(text("DELETE FROM pi_auth.login_throttle WHERE subject_hash = :h"),
+                        {"h": _digest("login", login)})
+        session.commit()
+    logger.info("password reset by the operator account_id=%s sessions_revoked=%d", account_id, revoked)
+    return account_id
 
 
 def resolve_session(token: Optional[str]) -> Optional[Principal]:
@@ -233,8 +387,13 @@ def end_session(token: Optional[str]) -> None:
 
 
 def purge_expired_sessions() -> int:
+    """Expired sessions, and throttling rows whose window and lock are over."""
     with session_scope() as session:
         count = session.execute(text("DELETE FROM pi_auth.web_sessions WHERE expires_at <= now()")).rowcount
+        session.execute(text(
+            "DELETE FROM pi_auth.login_throttle WHERE window_started_at <= :start "
+            "AND (locked_until IS NULL OR locked_until <= now())"
+        ), {"start": _now() - FAILURE_WINDOW})
         session.commit()
         return count
 

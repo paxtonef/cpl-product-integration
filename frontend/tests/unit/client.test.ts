@@ -58,6 +58,36 @@ describe('apiClient session handling', () => {
     expect(fetchMock.mock.calls[2][1].headers['X-CSRF-Token']).toBeUndefined()
   })
 
+  it('changes the password with the CSRF token, then forgets it (every session is revoked)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { csrf_token: 'csrf-4', contact_id: 'c', account_id: 'a' }))
+    await apiClient.login('alice', 'a-long-password')
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await apiClient.changePassword('a-long-password', 'another-long-password')
+    const [url, init] = fetchMock.mock.calls[1]
+    expect(url).toBe('/api/auth/password')
+    expect(init.method).toBe('POST')
+    expect(init.headers['X-CSRF-Token']).toBe('csrf-4')
+    expect(JSON.parse(init.body)).toEqual({ current_password: 'a-long-password', new_password: 'another-long-password' })
+    fetchMock.mockResolvedValueOnce(jsonResponse(403, { error_category: 'CSRF_REJECTED', message: 'x' }))
+    await expect(apiClient.registerVehicle({ contact_idempotency_key: 'a', asset_idempotency_key: 'b' })).rejects.toBeTruthy()
+    expect(fetchMock.mock.calls[2][1].headers['X-CSRF-Token']).toBeUndefined()
+  })
+
+  it('reaches the VIR result and confirmations of the case only through its own routes', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(200, {}))
+    await apiClient.getCaseVIR('case-1')
+    await apiClient.confirmVIRField('case-1', 'drivetrain', 'front_wheel_drive')
+    await apiClient.correctVIRField('case-1', 'drivetrain', 'rear_wheel_drive')
+    await apiClient.withdrawVIRField('case-1', 'drivetrain')
+    expect(fetchMock.mock.calls.map(([url, init]) => [init.method, url])).toEqual([
+      ['GET', '/api/cases/case-1/vir'],
+      ['POST', '/api/cases/case-1/vir/confirmations'],
+      ['PUT', '/api/cases/case-1/vir/confirmations/drivetrain'],
+      ['DELETE', '/api/cases/case-1/vir/confirmations/drivetrain'],
+    ])
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ field_path: 'drivetrain', value: 'front_wheel_drive' })
+  })
+
   it('offers no contact creation (accounts are created by the operator)', () => {
     expect('createContact' in apiClient).toBe(false)
   })

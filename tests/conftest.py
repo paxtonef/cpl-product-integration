@@ -55,6 +55,14 @@ def migrate_cpl():
         cfg.set_main_option("sqlalchemy.url", str(engine.url))
         cfg.set_main_option("script_location", str(_cpl_alembic_ini().parent / "migrations"))
         command.upgrade(cfg, "head")
+        # CPL's migrations/env.py runs logging.config.fileConfig, which
+        # disables every logger that already exists -- PI's own included,
+        # though PI never runs alembic in its process. Undo that here so the
+        # tests see PI's log records exactly as production writes them.
+        import logging
+        for name, existing in logging.root.manager.loggerDict.items():
+            if name.startswith("product_integration") and isinstance(existing, logging.Logger):
+                existing.disabled = False
 
         # PI's own end-user account schema (pi_auth), on top of CPL's chain.
         from product_integration.auth import schema as pi_auth_schema

@@ -1,5 +1,6 @@
 import { Link, useParams } from 'react-router-dom'
 import { JourneyShell } from '../components/JourneyShell'
+import { VIRResultView } from '../components/VIRResultView'
 
 export function CaseHub() {
   const { caseId } = useParams<{ caseId: string }>()
@@ -11,6 +12,7 @@ export function CaseHub() {
         <main>
           <h1>Vehicle identity resolved</h1>
           <p>Case status: {state.caseStatus.case_status}</p>
+          <VIRResultView caseId={caseId} />
           <p>
             <Link to={`/cases/${caseId}/diagnostic`}>Start a diagnostic</Link>
           </p>

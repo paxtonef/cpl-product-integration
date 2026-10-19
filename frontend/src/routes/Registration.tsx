@@ -16,6 +16,7 @@ export function StartCaseForm({ contactId, assetId }: { contactId: string; asset
   const [vin, setVin] = useState('')
   const [registrationNumber, setRegistrationNumber] = useState('')
   const [registrationCountry, setRegistrationCountry] = useState('')
+  const [consent, setConsent] = useState(false)
   const [status, setStatus] = useState<'ready' | 'submitting'>('ready')
   const [error, setError] = useState<ApiError | null>(null)
   const [result, setResult] = useState<CaseVIRResponse | null>(null)
@@ -32,6 +33,10 @@ export function StartCaseForm({ contactId, assetId }: { contactId: string; asset
       setError(new ApiError('VALIDATION', 'Please choose the registration country.', 422))
       return
     }
+    if (!consent) {
+      setError(new ApiError('VALIDATION', 'Your consent is needed before your VIN or registration number is looked up.', 422))
+      return
+    }
     setStatus('submitting')
     try {
       const response = await apiClient.startCaseVIR({
@@ -41,7 +46,7 @@ export function StartCaseForm({ contactId, assetId }: { contactId: string; asset
         vin: vin.trim() || null,
         registration_number: registrationNumber.trim() || null,
         registration_country_code: registrationCountry,
-        consent: { external_lookup_allowed: true },
+        consent: { external_lookup_allowed: consent },
         case_idempotency_key: crypto.randomUUID(),
       })
       if (!response.case_id) {
@@ -101,6 +106,19 @@ export function StartCaseForm({ contactId, assetId }: { contactId: string; asset
             </option>
           ))}
         </select>
+      </div>
+      <div>
+        <input
+          id="externalLookupConsent"
+          type="checkbox"
+          checked={consent}
+          onChange={(event) => setConsent(event.target.checked)}
+          disabled={status === 'submitting'}
+        />
+        <label htmlFor="externalLookupConsent">
+          I agree that my VIN or registration number is sent to the vehicle-data providers to identify my vehicle
+        </label>
+        <p>Nothing is looked up without this consent; the number is sent only for this lookup.</p>
       </div>
       <button type="submit" disabled={status === 'submitting'}>
         {status === 'submitting' ? 'Starting…' : 'Continue'}

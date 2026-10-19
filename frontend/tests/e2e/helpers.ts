@@ -1,16 +1,19 @@
 import { type Page, expect } from '@playwright/test'
 
+export const CONSENT_LABEL =
+  'I agree that my VIN or registration number is sent to the vehicle-data providers to identify my vehicle'
+
 // Fictitious accounts created beforehand with the operator command
 // (python -m product_integration.auth.cli create-account --password-stdin);
 // their logins and passwords are given to the run through the environment.
-export function credentials(user: 'A' | 'B' = 'A'): { login: string; password: string } {
+export function credentials(user: 'A' | 'B' | 'C' = 'A'): { login: string; password: string } {
   const login = process.env[`E2E_LOGIN_${user}`]
   const password = process.env[`E2E_PASSWORD_${user}`]
   if (!login || !password) throw new Error(`E2E_LOGIN_${user} / E2E_PASSWORD_${user} are not set`)
   return { login, password }
 }
 
-export async function signIn(page: Page, user: 'A' | 'B' = 'A') {
+export async function signIn(page: Page, user: 'A' | 'B' | 'C' = 'A') {
   const { login, password } = credentials(user)
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
   await page.getByLabel('Login').fill(login)
@@ -30,7 +33,7 @@ export async function ensureSignedIn(page: Page, user: 'A' | 'B' = 'A') {
 
 export async function registerAndResolveVehicle(
   page: Page,
-  opts: { vin?: string; registrationNumber?: string; user?: 'A' | 'B' } = {},
+  opts: { vin?: string; registrationNumber?: string; user?: 'A' | 'B' | 'C' } = {},
 ): Promise<string> {
   await ensureSignedIn(page, opts.user ?? 'A')
   await page.goto('/register')
@@ -50,6 +53,8 @@ export async function registerAndResolveVehicle(
   }
   // VIR V1: the registration country is always the user's explicit choice.
   await page.getByLabel('Registration country').selectOption('FR')
+  // A plate or a VIN is looked up only with the user's explicit consent.
+  await page.getByLabel(CONSENT_LABEL).check()
   await page.getByRole('button', { name: 'Continue' }).click()
   await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()

@@ -14,6 +14,7 @@ export function Login() {
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as { from?: string } | null)?.from
+  const notice = (location.state as { message?: string } | null)?.message
   // Back to the page that asked for a session (a path of this app only).
   const target = from && from.startsWith('/') && !from.startsWith('//') && from !== '/login' ? from : '/'
 
@@ -36,6 +37,7 @@ export function Login() {
     <main>
       <form onSubmit={handleSubmit} aria-label="Sign in">
         <h1>Sign in</h1>
+        {notice && !error && <p role="status">{notice}</p>}
         {error && <ErrorBanner error={error} />}
         <div>
           <label htmlFor="login">Login</label>

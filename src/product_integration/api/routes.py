@@ -57,6 +57,8 @@ from product_integration.orchestration.case_orchestration import _sync_case_with
 from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.vir.client import VIRClient
 from product_integration.vir.errors import VIRClientError, VIRTechnicalFailureError
+from product_integration.vir.presentation import build_view, redact_identifiers
+from vir.domain.driver_confirmation import CONFIRMABLE_FIELDS
 
 from product_integration.api.deps import get_authority, get_media_storage, get_pgdr_registry, get_principal, get_vir_client
 from product_integration.auth.accounts import Principal
@@ -76,6 +78,8 @@ from product_integration.api.schemas import (
     ContactResponse,
     DiagnosticQuestionSchema,
     DiagnosticResponse,
+    DriverConfirmationCorrectionRequest,
+    DriverConfirmationRequest,
     ExecutionStatusResponse,
     HistoryExecutionEntry,
     MediaUploadResponse,
@@ -85,6 +89,7 @@ from product_integration.api.schemas import (
     StartDiagnosticRequest,
     SubmitAnswerRequest,
     SubmitClarificationRequest,
+    VIRResolutionView,
 )
 
 router = APIRouter(dependencies=[Depends(get_principal)])
@@ -177,6 +182,16 @@ async def start_case_route(
     with session_scope() as session:
         if not can_use_asset(session, principal, body.asset_id):
             raise not_found()
+    # A plate or a VIN leaves PI only for VIR, only with the explicit consent
+    # to the external lookup and an explicitly chosen country; otherwise
+    # nothing is created and VIR is not called. The refusal echoes nothing.
+    if body.vin or body.registration_number:
+        if not body.consent.external_lookup_allowed:
+            raise ProductAPIError(ProductAPIErrorCategory.CONSENT_REQUIRED,
+                                  "consent to the external lookup is required for a plate or a VIN")
+        if not body.registration_country_code:
+            raise ProductAPIError(ProductAPIErrorCategory.INVALID_REQUEST,
+                                  "the registration country must be chosen explicitly")
     from product_integration.vir.schemas import VehicleIdentityRequest as ProductVIRRequest, ConsentInput as ProductConsentInput
     product_request_kwargs: dict = {"request_id": scoped_key(principal, body.request_id), "consent": ProductConsentInput(external_lookup_allowed=body.consent.external_lookup_allowed)}
     if body.vin:
@@ -230,7 +245,16 @@ async def submit_clarification_route(
         case = owned_case(session, principal, case_id)
         vir_execution, vir_artifact = _find_vir_execution_and_artifact(session, case_id)
         original_resolution_id = vir_artifact.payload.get("resolution_id")
+        asked = {q.get("question_id") for q in vir_artifact.payload.get("clarification_questions") or []
+                 if isinstance(q, dict)}
         asset_id = case.asset_id
+
+    # Only answers to questions VIR actually asked for this resolution: VIR
+    # would silently ignore any other answer and resolve again (consulting
+    # the providers), so PI refuses it first -- no VIR call, nothing written.
+    if not body.answers or any(a.question_id not in asked for a in body.answers):
+        raise ProductAPIError(ProductAPIErrorCategory.CLARIFICATION_REFUSED,
+                              "answer only the questions asked for this vehicle", extra={"case_id": str(case_id)})
 
     # VIR V1 refuses an answer it cannot apply (VIR-ERR-016, resolution left
     # unchanged): a typed VIR failure for the product, nothing recorded here.
@@ -269,6 +293,122 @@ async def submit_clarification_route(
         outcome=vir_result.outcome, asset_id=asset_id, case_id=case_id, vir_execution_id=vir_result.execution_id,
         vir_artifact_id=vir_result.artifact_id, vir_resolution_status=vir_result.cpl_resolution_status, detail=vir_result.detail,
     )
+
+
+# -- VIR result and driver confirmation -------------------------------------------------------
+
+def _has_diagnostic(session, case_id: UUID) -> bool:
+    return session.query(RunnerExecution.execution_id).filter(
+        RunnerExecution.case_id == case_id, RunnerExecution.runner_type == "PGDR").first() is not None
+
+
+def _vir_refusal(exc: VIRClientError, case_id: UUID) -> ProductAPIError:
+    """A value VIR refuses is the user's to fix (422, VIR's error code, never
+    the value nor VIR's message); anything else is a VIR failure (502)."""
+    if isinstance(exc, VIRTechnicalFailureError) and exc.http_status in (409, 422):
+        return ProductAPIError(ProductAPIErrorCategory.VIR_INPUT_REFUSED, "VIR did not accept this value",
+                               extra={"case_id": str(case_id), "vir_error_code": exc.error_code})
+    return ProductAPIError(ProductAPIErrorCategory.VIR_TECHNICAL_FAILURE, type(exc).__name__,
+                           extra={"case_id": str(case_id)})
+
+
+@router.get("/cases/{case_id}/vir", response_model=VIRResolutionView)
+async def get_case_vir_route(
+    case_id: UUID, vir_client: VIRClient = Depends(get_vir_client), principal: Principal = Depends(get_principal),
+):
+    """The case's latest VIR result, read again from VIR (its stored result:
+    no provider is consulted). The resolution is the one recorded for this
+    case of this user, never one named by the client."""
+    with session_scope() as session:
+        owned_case(session, principal, case_id)
+        vir_execution, vir_artifact = _find_vir_execution_and_artifact(session, case_id)
+        resolution_id = vir_artifact.payload.get("resolution_id")
+        locked = _has_diagnostic(session, case_id)
+    try:
+        document = await vir_client.get_resolution_document(resolution_id)
+    except VIRClientError as exc:
+        raise _vir_refusal(exc, case_id) from None
+    return VIRResolutionView(case_id=case_id, vir_execution_id=vir_execution.execution_id,
+                             **build_view(document, confirmations_locked=locked))
+
+
+async def _driver_confirmation(case_id: UUID, field_path: str, operation: str, call, authority, principal) -> CaseVIRResponse:
+    """confirm / correct / withdraw: ownership of the case and of its latest
+    resolution checked first, the field must be one of VIR's seven, the
+    identity is frozen once a diagnostic exists. VIR recomputes from its
+    stored evidence (no provider call); the new state is registered in CPL
+    as a new VIR execution of the same case."""
+    if field_path not in CONFIRMABLE_FIELDS:
+        with session_scope() as session:
+            owned_case(session, principal, case_id)
+        raise ProductAPIError(ProductAPIErrorCategory.INVALID_REQUEST, "this field cannot be confirmed",
+                              extra={"case_id": str(case_id)})
+    with session_scope() as session:
+        case = owned_case(session, principal, case_id)
+        vir_execution, vir_artifact = _find_vir_execution_and_artifact(session, case_id)
+        resolution_id = vir_artifact.payload.get("resolution_id")
+        asset_id = case.asset_id
+        if _has_diagnostic(session, case_id):
+            raise ProductAPIError(ProductAPIErrorCategory.CONFLICT,
+                                  "the vehicle identity can no longer change once a diagnostic has started",
+                                  extra={"case_id": str(case_id)})
+    try:
+        updated = await call(resolution_id)
+    except VIRClientError as exc:
+        raise _vir_refusal(exc, case_id) from None
+
+    vir_result = register_vir_resolution_result(
+        vir_resolution=updated, case_id=case_id, asset_id=asset_id, authority=authority,
+        driver_confirmation={"operation": operation, "field_path": field_path,
+                             "updates_execution_id": str(vir_execution.execution_id)},
+    )
+    if vir_result.outcome == VIRRegistrationOutcome.SUCCESS:
+        sync_error = _sync_case_with_execution(
+            case_id=case_id, execution_id=vir_result.execution_id, target_status="IN_PROGRESS", authority=authority,
+            observed_status_label=vir_result.outcome,
+        )
+        if sync_error is not None:
+            raise ProductAPIError(
+                ProductAPIErrorCategory.CASE_ORCHESTRATION_FAILURE,
+                f"VIR result persisted correctly, but Case sync failed: {sync_error.underlying_error}",
+                extra={"case_id": str(case_id), "vir_execution_id": str(vir_result.execution_id)},
+            )
+    return CaseVIRResponse(
+        outcome=vir_result.outcome, asset_id=asset_id, case_id=case_id, vir_execution_id=vir_result.execution_id,
+        vir_artifact_id=vir_result.artifact_id, vir_resolution_status=vir_result.cpl_resolution_status,
+        detail=vir_result.detail,
+    )
+
+
+@router.post("/cases/{case_id}/vir/confirmations", response_model=CaseVIRResponse)
+async def confirm_vir_field_route(
+    case_id: UUID, body: DriverConfirmationRequest, authority: AuthorityContext = Depends(get_authority),
+    vir_client: VIRClient = Depends(get_vir_client), principal: Principal = Depends(get_principal),
+):
+    return await _driver_confirmation(
+        case_id, body.field_path, "confirm",
+        lambda resolution_id: vir_client.confirm_field(resolution_id, body.field_path, body.value), authority, principal)
+
+
+@router.put("/cases/{case_id}/vir/confirmations/{field_path}", response_model=CaseVIRResponse)
+async def correct_vir_field_route(
+    case_id: UUID, field_path: str, body: DriverConfirmationCorrectionRequest,
+    authority: AuthorityContext = Depends(get_authority), vir_client: VIRClient = Depends(get_vir_client),
+    principal: Principal = Depends(get_principal),
+):
+    return await _driver_confirmation(
+        case_id, field_path, "correct",
+        lambda resolution_id: vir_client.correct_field(resolution_id, field_path, body.value), authority, principal)
+
+
+@router.delete("/cases/{case_id}/vir/confirmations/{field_path}", response_model=CaseVIRResponse)
+async def withdraw_vir_field_route(
+    case_id: UUID, field_path: str, authority: AuthorityContext = Depends(get_authority),
+    vir_client: VIRClient = Depends(get_vir_client), principal: Principal = Depends(get_principal),
+):
+    return await _driver_confirmation(
+        case_id, field_path, "withdraw",
+        lambda resolution_id: vir_client.withdraw_field(resolution_id, field_path), authority, principal)
 
 
 # -- case status / history (§16/§18) -------------------------------------------------------
@@ -344,9 +484,12 @@ def get_execution_artifact_route(execution_id: UUID, principal: Principal = Depe
         )
         if artifact is None:
             raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"no artifact found for execution {execution_id}")
+        payload = dict(artifact.payload)
+        if artifact.artifact_type == "vir_resolution":
+            payload = redact_identifiers(payload)   # the plate and the VIN are never served back
         return ArtifactResponse(
             artifact_id=artifact.artifact_id, execution_id=artifact.execution_id, artifact_type=artifact.artifact_type,
-            artifact_status=artifact.artifact_status, payload=dict(artifact.payload),
+            artifact_status=artifact.artifact_status, payload=payload,
         )
 
 

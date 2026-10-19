@@ -94,8 +94,22 @@ $PREFIX/venv/bin/python -m product_integration.auth.cli create-account --login <
 ```
 
 Autres commandes : `disable-account` / `enable-account --login …` (sessions supprimées à la
-désactivation), `purge-sessions`. Un nom « admin » ne donne aucun droit particulier. Aucune
-commande de changement de mot de passe n'existe à ce jour (désactiver puis recréer).
+désactivation), `purge-sessions` (sessions expirées et compteurs d'échecs échus). Un nom
+« admin » ne donne aucun droit particulier.
+
+Mot de passe : l'utilisateur le change lui-même (page « Change password » : mot de passe actuel
+exigé). L'opérateur le réinitialise avec
+`reset-password --login <identifiant>` (saisie masquée deux fois, ou `--password-stdin`) ; la
+ligne d'audit (identifiant de compte seul, jamais le mot de passe ni l'identifiant de connexion)
+sort sur la sortie d'erreur. Dans les deux cas toutes les sessions du compte sont révoquées ; le
+compte et le contact CPL gardent leurs identifiants, rien n'est désactivé ni recréé. Ne plus
+désactiver puis recréer un compte pour changer un mot de passe : cela crée un nouveau contact
+sans ses dossiers.
+
+Essais de mot de passe : 5 échecs par couple identifiant/origine, 50 par origine, 100 par
+identifiant toutes origines, sur 15 min, chacun bloquant 15 min. L'origine est l'adresse vue par
+PI-05 : derrière un proxy TLS, lancer uvicorn avec `--proxy-headers --forwarded-allow-ips=<proxy>`,
+sinon toutes les connexions partagent l'adresse du proxy.
 
 ## 6. Lancement, santé, arrêt, redémarrage
 

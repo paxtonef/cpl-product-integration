@@ -4,17 +4,23 @@
   python -m product_integration.auth.cli create-account --login alice [--display-name "Alice"]
         password typed twice with masked input; --password-stdin reads one
         line from standard input instead (for scripted provisioning)
+  python -m product_integration.auth.cli reset-password --login alice
+        new password typed twice with masked input (or --password-stdin);
+        every session of the account is revoked; Account and Contact unchanged
   python -m product_integration.auth.cli disable-account --login alice
   python -m product_integration.auth.cli enable-account --login alice
   python -m product_integration.auth.cli purge-sessions
   python -m product_integration.auth.cli downgrade --confirm-drop-pi-auth
 
 No password is ever printed, logged or accepted as a command-line argument.
+The command writes its audit lines (e.g. a password reset, with the account
+id only) to standard error.
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import logging
 import sys
 
 from app.db.engine import engine
@@ -46,10 +52,14 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--login", required=True)
     create.add_argument("--display-name")
     create.add_argument("--password-stdin", action="store_true")
+    reset = sub.add_parser("reset-password")
+    reset.add_argument("--login", required=True)
+    reset.add_argument("--password-stdin", action="store_true")
     for name in ("disable-account", "enable-account"):
         sub.add_parser(name).add_argument("--login", required=True)
     sub.add_parser("purge-sessions")
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
     try:
         if args.command == "migrate":
@@ -63,6 +73,9 @@ def main(argv: list[str] | None = None) -> int:
             password = _read_password(args.password_stdin)
             account_id = accounts.create_account(args.login, password, display_name=args.display_name)
             print(f"account created: {account_id}")
+        elif args.command == "reset-password":
+            account_id = accounts.reset_password(args.login, _read_password(args.password_stdin))
+            print(f"password reset, sessions revoked: {account_id}")
         elif args.command in ("disable-account", "enable-account"):
             accounts.set_account_status(args.login, "DISABLED" if args.command == "disable-account" else "ACTIVE")
             print("account status updated")

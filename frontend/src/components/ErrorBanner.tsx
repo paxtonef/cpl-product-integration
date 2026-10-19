@@ -15,6 +15,12 @@ const CATEGORY_MESSAGE: Record<string, string> = {
     "This diagnostic session can no longer accept an answer here. Please contact support to continue this case.",
   [ApiErrorCategory.AUTHENTICATION_REQUIRED]: 'Invalid login or password.',
   [ApiErrorCategory.CSRF_REJECTED]: 'Your session needs to be refreshed. Please reload the page.',
+  [ApiErrorCategory.PASSWORD_CHANGE_REFUSED]:
+    'The current password is incorrect, or there were too many attempts. Please try again later.',
+  [ApiErrorCategory.CONSENT_REQUIRED]: 'Your consent is needed before your VIN or registration number is looked up.',
+  [ApiErrorCategory.INVALID_REQUEST]: 'This request is not valid. Please check what you entered.',
+  [ApiErrorCategory.CLARIFICATION_REFUSED]: 'Please answer only the questions shown for your vehicle.',
+  [ApiErrorCategory.VIR_INPUT_REFUSED]: 'This value was not accepted for this field.',
   [ApiErrorCategory.UNEXPECTED]: 'Something went wrong. Please try again.',
 }
 
@@ -23,10 +29,12 @@ const CATEGORY_MESSAGE: Record<string, string> = {
 // already a real, user-facing string written by the component that raised
 // it, so it is rendered directly rather than mapped to a canned string.
 const CLIENT_VALIDATION_CATEGORY = 'VALIDATION'
+// The password policy's own wording (PI-05 auth.passwords): no secret in it.
+const SERVER_WORDED_CATEGORIES = new Set<string>([CLIENT_VALIDATION_CATEGORY, ApiErrorCategory.PASSWORD_POLICY])
 
 export function ErrorBanner({ error }: { error: ApiError }) {
   const message =
-    error.category === CLIENT_VALIDATION_CATEGORY
+    SERVER_WORDED_CATEGORIES.has(error.category)
       ? error.message
       : (CATEGORY_MESSAGE[error.category] ?? CATEGORY_MESSAGE[ApiErrorCategory.UNEXPECTED])
   return (

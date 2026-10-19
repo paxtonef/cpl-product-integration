@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { ensureSignedIn } from './helpers'
+import { CONSENT_LABEL, ensureSignedIn } from './helpers'
 
 // B. VIR clarification path (structuring §21-B): the real AMBIGUOUS-
 // triggering fixture (registration_number "AM-BIG-01", confirmed at PI-01's
@@ -21,6 +21,8 @@ test('B. VIR clarification path: automatic routing, then clarify and continue', 
   await expect(page.getByRole('heading', { name: 'Vehicle identity' })).toBeVisible()
   await page.getByLabel("Registration number (if you don't have the VIN)").fill('AM-BIG-01')
   await page.getByLabel('Registration country').selectOption('FR')
+  // The plate is looked up only with the user's explicit consent.
+  await page.getByLabel(CONSENT_LABEL).check()
   await page.getByRole('button', { name: 'Continue' }).click()
   await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()

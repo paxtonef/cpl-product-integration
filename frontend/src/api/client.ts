@@ -20,6 +20,7 @@ import type {
   StartDiagnosticRequest,
   SubmitAnswerRequest,
   SubmitClarificationRequest,
+  VIRResolutionView,
 } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -75,6 +76,12 @@ export const apiClient = {
       csrfToken = null
     }
   },
+  // Every session of the account, this one included, is revoked by PI-05 on
+  // success: the token is dropped and the user signs in again.
+  changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
+    await send('POST', '/auth/password', { current_password: currentPassword, new_password: newPassword })
+    csrfToken = null
+  },
   listCases: () => request<CaseListResponse>('GET', '/cases'),
   getContact: (contactId: string) => request<ContactResponse>('GET', `/contacts/${contactId}`),
   registerVehicle: (body: RegisterVehicleRequest) =>
@@ -82,6 +89,14 @@ export const apiClient = {
   startCaseVIR: (body: StartCaseRequest) => request<CaseVIRResponse>('POST', '/cases', body),
   submitClarification: (caseId: string, body: SubmitClarificationRequest) =>
     request<CaseVIRResponse>('POST', `/cases/${caseId}/vir/clarifications`, body),
+  // Reads the stored VIR result again; never a new lookup.
+  getCaseVIR: (caseId: string) => request<VIRResolutionView>('GET', `/cases/${caseId}/vir`),
+  confirmVIRField: (caseId: string, fieldPath: string, value: unknown) =>
+    request<CaseVIRResponse>('POST', `/cases/${caseId}/vir/confirmations`, { field_path: fieldPath, value }),
+  correctVIRField: (caseId: string, fieldPath: string, value: unknown) =>
+    request<CaseVIRResponse>('PUT', `/cases/${caseId}/vir/confirmations/${encodeURIComponent(fieldPath)}`, { value }),
+  withdrawVIRField: (caseId: string, fieldPath: string) =>
+    request<CaseVIRResponse>('DELETE', `/cases/${caseId}/vir/confirmations/${encodeURIComponent(fieldPath)}`),
   getCase: (caseId: string) => request<CaseStatusResponse>('GET', `/cases/${caseId}`),
   getCaseHistory: (caseId: string) => request<CaseHistoryResponse>('GET', `/cases/${caseId}/history`),
   startDiagnostic: (caseId: string, body: StartDiagnosticRequest) =>

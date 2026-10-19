@@ -100,6 +100,41 @@ class SubmitClarificationRequest(BaseModel):
     answers: list[ClarificationAnswerSchema]
 
 
+class DriverConfirmationRequest(BaseModel):
+    """The driver's confirmation of one of VIR's seven confirmable fields."""
+    field_path: str = Field(max_length=64)
+    value: Any
+
+
+class DriverConfirmationCorrectionRequest(BaseModel):
+    value: Any
+
+
+class VIRResolutionView(BaseModel):
+    """The latest VIR result of a case, as product_integration.vir.
+    presentation builds it from VIR's own document (no plate, no VIN)."""
+    case_id: UUID
+    vir_execution_id: UUID
+    resolution_status: str
+    confidence: dict[str, Any]
+    simulated: bool
+    registration_country: Optional[str] = None
+    exact_factory_configuration_known: bool
+    exact_factory_configuration_reasons: list[str]
+    fields: list[dict[str, Any]]
+    unknown_fields: list[str]
+    user_declared_fields: list[str]
+    user_confirmed_fields: list[str]
+    contradictions: list[dict[str, Any]]
+    alternative_candidates: list[dict[str, Any]]
+    excluded_candidates: list[dict[str, Any]]
+    descriptive_info: list[dict[str, Any]]
+    limitations: list[str]
+    clarification_questions: list[dict[str, Any]]
+    confirmations: list[dict[str, Any]]
+    confirmations_locked: bool
+
+
 # -- diagnostics (PGDR) -------------------------------------------------------------
 
 class StartDiagnosticRequest(BaseModel):

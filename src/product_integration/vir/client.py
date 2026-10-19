@@ -1,7 +1,7 @@
 """Async VIR HTTP client — the PI-01 integration boundary.
 
-Wraps exactly the four endpoints the Reality Check (§6) confirmed by
-reading vir/api/routes.py directly at baseline a342aba7cc2fc517621f4fc79c
+Wraps the four endpoints the Reality Check (§6) confirmed by reading
+vir/api/routes.py directly at baseline a342aba7cc2fc517621f4fc79c
 3191bdfdc9e10b:
 
   POST /v1/vehicle-identities/resolve
@@ -9,7 +9,15 @@ reading vir/api/routes.py directly at baseline a342aba7cc2fc517621f4fc79c
   GET  /v1/vehicle-identities/{resolution_id}
   GET  /v1/vehicle-identities/{resolution_id}/handoff/diagnostic
 
-No fifth endpoint is invented. No VIR internals are imported — this module
+plus the three driver-confirmation endpoints of VIR V1 (vir-v1-finalisation
+a4c0172, vir/api/routes.py), which recompute the result from the evidence
+VIR stored, never by consulting a provider:
+
+  POST   /v1/vehicle-identities/{resolution_id}/driver-confirmations
+  PUT    /v1/vehicle-identities/{resolution_id}/driver-confirmations/{field_path}
+  DELETE /v1/vehicle-identities/{resolution_id}/driver-confirmations/{field_path}
+
+No other endpoint is invented. No VIR internals are imported — this module
 talks to VIR only via HTTP (an httpx.AsyncClient, which may be bound to a
 real network transport or, for testing, an ASGI transport wrapping VIR's
 own FastAPI app in-process — either way, the actual HTTP-shaped request/
@@ -27,7 +35,8 @@ which surfaces here as a VIRClientError like any other refusal.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 from pydantic import ValidationError
@@ -83,6 +92,42 @@ class VIRClient:
     async def get_resolution(self, resolution_id: str) -> VehicleIdentityResolution:
         """GET /v1/vehicle-identities/{resolution_id}."""
         response = await self._request("GET", f"/v1/vehicle-identities/{resolution_id}")
+        return self._parse(response, VehicleIdentityResolution)
+
+    async def get_resolution_document(self, resolution_id: str) -> dict:
+        """GET /v1/vehicle-identities/{resolution_id}, as VIR's own JSON
+        document (every field VIR serves, including the providers'
+        descriptive information and set-aside candidates the PI-01 mirror
+        does not keep). For presentation only; VIR reads its stored result
+        and consults no provider."""
+        response = await self._request("GET", f"/v1/vehicle-identities/{resolution_id}")
+        try:
+            document = response.json()
+        except ValueError as exc:
+            raise VIRInvalidResponseError("VIR returned a non-JSON resolution document",
+                                          status_code=response.status_code, body=response.text) from exc
+        if not isinstance(document, dict):
+            raise VIRInvalidResponseError("VIR returned a resolution document that is not an object",
+                                          status_code=response.status_code, body=response.text)
+        return document
+
+    async def confirm_field(self, resolution_id: str, field_path: str, value: Any) -> VehicleIdentityResolution:
+        """POST .../driver-confirmations: the driver's confirmation of one field."""
+        response = await self._request("POST", f"/v1/vehicle-identities/{resolution_id}/driver-confirmations",
+                                        json={"field_path": field_path, "value": value})
+        return self._parse(response, VehicleIdentityResolution)
+
+    async def correct_field(self, resolution_id: str, field_path: str, value: Any) -> VehicleIdentityResolution:
+        """PUT .../driver-confirmations/{field_path}: replaces the driver's own confirmation."""
+        response = await self._request(
+            "PUT", f"/v1/vehicle-identities/{resolution_id}/driver-confirmations/{quote(field_path, safe='')}",
+            json={"value": value})
+        return self._parse(response, VehicleIdentityResolution)
+
+    async def withdraw_field(self, resolution_id: str, field_path: str) -> VehicleIdentityResolution:
+        """DELETE .../driver-confirmations/{field_path}: withdraws the driver's confirmation."""
+        response = await self._request(
+            "DELETE", f"/v1/vehicle-identities/{resolution_id}/driver-confirmations/{quote(field_path, safe='')}")
         return self._parse(response, VehicleIdentityResolution)
 
     async def get_diagnostic_handoff(self, resolution_id: str) -> DiagnosticIdentityContext:

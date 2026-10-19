@@ -184,10 +184,13 @@ class TestEndToEnd:
         r = await api_client.get(f"/executions/{diag['execution_id']}/artifact")
         assert FICTIVE_VIN not in r.text and FICTIVE_PLATE not in r.text
 
-        # an error path: an unknown clarification answer is refused by VIR
+        # an error path: an answer to a question VIR never asked is refused by
+        # PI itself, before any VIR call (VIR would silently ignore it and
+        # re-resolve), and the refusal echoes nothing of what was sent
         r = await api_client.post(f"/cases/{case['case_id']}/vir/clarifications",
                                   json={"answers": [{"question_id": "no-such-question", "value": FICTIVE_PLATE + "?"}]})
-        assert FICTIVE_VIN not in r.text
+        assert r.status_code == 422 and r.json()["error_category"] == "CLARIFICATION_REFUSED"
+        assert FICTIVE_VIN not in r.text and FICTIVE_PLATE not in r.text
 
         logged = "\n".join(record.getMessage() for record in caplog.records)
         assert FICTIVE_VIN not in logged and FICTIVE_PLATE not in logged

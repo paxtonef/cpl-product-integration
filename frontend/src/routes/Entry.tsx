@@ -47,6 +47,9 @@ export function Entry() {
           </ul>
         )}
       </section>
+      <p>
+        <Link to="/account/password">Change password</Link>
+      </p>
       <button type="button" onClick={handleLogout}>
         Sign out
       </button>

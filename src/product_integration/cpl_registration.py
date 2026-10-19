@@ -54,6 +54,7 @@ opaquely (REQ-B6-016/069, unchanged since B6).
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
@@ -297,6 +298,7 @@ def register_vir_resolution_result(
     resolver_version: str = "unknown",
     clarifies_execution_id: Optional[UUID] = None,
     clarifies_resolution_id: Optional[str] = None,
+    driver_confirmation: Optional[dict] = None,
 ) -> VIRRegistrationResult:
     """Path B — register an ALREADY-OBTAINED VIR result (this is the
     PI-01-VF-01 repair). The caller obtains `vir_resolution` however it
@@ -312,9 +314,19 @@ def register_vir_resolution_result(
     (AssetIdentityResolution.provenance_payload — an existing JSONB field
     already used for VIR resolution_id tracking, not a new CPL schema
     element) rather than left silently untracked. Per REQ-B6-006/043
-    (unchanged), this is never recorded via parent_execution_id."""
-    idempotency_key = vir_resolution.resolution_id  # the clarified result's own VIR resolution_id
-    execution_purpose = "vehicle_identity_resolution_clarification"
+    (unchanged), this is never recorded via parent_execution_id.
+
+    `driver_confirmation` ({"operation", "field_path", "updates_execution_id"})
+    registers the result of a driver confirmation, correction or withdrawal.
+    VIR recomputes it under the SAME resolution_id, so each such operation is
+    its own new execution attempt (REQ-B6-004), with a fresh idempotency key;
+    the earlier execution and its artifact are never rewritten (REQ-B6-062)."""
+    if driver_confirmation is None:
+        idempotency_key = vir_resolution.resolution_id  # the clarified result's own VIR resolution_id
+        execution_purpose = "vehicle_identity_resolution_clarification"
+    else:
+        idempotency_key = f"{vir_resolution.resolution_id}:driver-confirmation:{uuid.uuid4().hex}"
+        execution_purpose = "vehicle_identity_driver_confirmation"
 
     try:
         execution_id, was_replay = _admit_and_prepare(
@@ -336,6 +348,8 @@ def register_vir_resolution_result(
         extra_provenance["clarifies_execution_id"] = str(clarifies_execution_id)
     if clarifies_resolution_id is not None:
         extra_provenance["clarifies_resolution_id"] = clarifies_resolution_id
+    if driver_confirmation is not None:
+        extra_provenance["driver_confirmation"] = dict(driver_confirmation)
 
     # No VIR call here — this is the entire point of the repair. The
     # already-obtained `vir_resolution` is the authoritative result to

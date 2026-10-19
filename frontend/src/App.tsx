@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { SessionGate } from './components/SessionGate'
+import { AccountPassword } from './routes/AccountPassword'
 import { CaseHub } from './routes/CaseHub'
 import { Clarification } from './routes/Clarification'
 import { Diagnostic } from './routes/Diagnostic'
@@ -16,6 +17,7 @@ export function App() {
         <Route path="/login" element={<Login />} />
         <Route element={<SessionGate />}>
           <Route path="/" element={<Entry />} />
+          <Route path="/account/password" element={<AccountPassword />} />
           <Route path="/register" element={<Registration />} />
           <Route path="/cases/:caseId" element={<CaseHub />} />
           <Route path="/cases/:caseId/clarification" element={<Clarification />} />

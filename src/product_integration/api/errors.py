@@ -104,6 +104,19 @@ class ProductAPIErrorCategory:
     # unsafe request without the session's CSRF token -> 403.
     AUTHENTICATION_REQUIRED = "AUTHENTICATION_REQUIRED"
     CSRF_REJECTED = "CSRF_REJECTED"
+    # Password change: wrong current password or throttled (one answer for
+    # both) -> 400; new password refused by the policy -> 422.
+    PASSWORD_CHANGE_REFUSED = "PASSWORD_CHANGE_REFUSED"
+    PASSWORD_POLICY = "PASSWORD_POLICY"
+    # VIR in the product: a plate/VIN without explicit consent to the external
+    # lookup, a malformed request (identifier without country, field that
+    # cannot be confirmed), an answer to a question VIR never asked -- all
+    # refused by PI before any VIR call; a value VIR itself refuses (its
+    # vir_error_code is given, never the value).
+    CONSENT_REQUIRED = "CONSENT_REQUIRED"
+    INVALID_REQUEST = "INVALID_REQUEST"
+    CLARIFICATION_REFUSED = "CLARIFICATION_REFUSED"
+    VIR_INPUT_REFUSED = "VIR_INPUT_REFUSED"
     UNEXPECTED = "UNEXPECTED"
 
 
@@ -120,6 +133,12 @@ _CATEGORY_TO_STATUS: dict[str, int] = {
     ProductAPIErrorCategory.PROCESS_LOCAL_STATE_UNAVAILABLE: 409,
     ProductAPIErrorCategory.AUTHENTICATION_REQUIRED: 401,
     ProductAPIErrorCategory.CSRF_REJECTED: 403,
+    ProductAPIErrorCategory.PASSWORD_CHANGE_REFUSED: 400,
+    ProductAPIErrorCategory.PASSWORD_POLICY: 422,
+    ProductAPIErrorCategory.CONSENT_REQUIRED: 422,
+    ProductAPIErrorCategory.INVALID_REQUEST: 422,
+    ProductAPIErrorCategory.CLARIFICATION_REFUSED: 422,
+    ProductAPIErrorCategory.VIR_INPUT_REFUSED: 422,
     ProductAPIErrorCategory.UNEXPECTED: 500,
 }
 

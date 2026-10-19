@@ -1,5 +1,6 @@
-"""PI-owned storage for end-user credentials, web sessions and media
-ownership — schema ``pi_auth`` in the same PostgreSQL database as CPL.
+"""PI-owned storage for end-user credentials, web sessions, media ownership
+and sign-in throttling — schema ``pi_auth`` in the same PostgreSQL database
+as CPL.
 
 CPL already owns the identity binding (``cpl.accounts``: an Account is a
 provider identity bound to a Contact). CPL stores no credential and no web
@@ -16,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _UPGRADE_V1 = [
     "CREATE SCHEMA IF NOT EXISTS pi_auth",
@@ -50,6 +51,24 @@ _UPGRADE_V1 = [
     "CREATE INDEX IF NOT EXISTS media_ownership_contact_idx ON pi_auth.media_ownership(contact_id)",
 ]
 
+# Version 2: failed password attempts are counted per (login, origin), per
+# origin and per login, each with its own window and lock (see
+# product_integration.auth.accounts). Only SHA-256 digests are stored: no
+# login, no address. The per-account columns of credentials
+# (failed_attempts, locked_until) are no longer written.
+_UPGRADE_V2 = [
+    """CREATE TABLE IF NOT EXISTS pi_auth.login_throttle (
+        scope text NOT NULL CHECK (scope IN ('login_origin', 'origin', 'login')),
+        subject_hash text NOT NULL,
+        origin_hash text NOT NULL,
+        failures integer NOT NULL DEFAULT 0,
+        window_started_at timestamptz NOT NULL DEFAULT now(),
+        locked_until timestamptz NULL,
+        PRIMARY KEY (scope, subject_hash, origin_hash)
+    )""",
+    "CREATE INDEX IF NOT EXISTS login_throttle_subject_idx ON pi_auth.login_throttle(subject_hash)",
+]
+
 
 def current_version(conn: Connection) -> int:
     exists = conn.execute(text("SELECT to_regclass('pi_auth.schema_version')")).scalar()
@@ -65,6 +84,10 @@ def upgrade(conn: Connection) -> int:
         for statement in _UPGRADE_V1:
             conn.execute(text(statement))
         conn.execute(text("INSERT INTO pi_auth.schema_version(version) VALUES (1)"))
+    if current_version(conn) < 2:
+        for statement in _UPGRADE_V2:
+            conn.execute(text(statement))
+        conn.execute(text("INSERT INTO pi_auth.schema_version(version) VALUES (2)"))
     return current_version(conn)
 
 

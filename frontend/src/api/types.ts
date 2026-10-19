@@ -68,6 +68,90 @@ export interface CaseVIRResponse {
   detail?: string | null
 }
 
+// GET /cases/{id}/vir -- mirrors api/schemas.py VIRResolutionView, built by
+// product_integration.vir.presentation from VIR's own document (no plate, no VIN).
+export interface VIRSource {
+  source_id: string
+  method: string | null
+  role: string | null
+  reliability: string
+  simulated: boolean
+  partial: boolean
+  user_declared: boolean
+}
+
+export interface VIRDivergentValue {
+  source_id: string
+  value: unknown
+  method: string | null
+}
+
+export interface VIRField {
+  field_path: string
+  value: unknown
+  status: string | null
+  status_label: string | null
+  sources: VIRSource[]
+  divergent: VIRDivergentValue[]
+  consulted_without_value: string[]
+}
+
+export interface VIRConfirmable {
+  field_path: string
+  value: unknown
+  status: string | null
+  status_label: string | null
+  proposals: { value: unknown; sources: string[] }[]
+  confirmation: { value: unknown; applied: boolean } | null
+  choices: string[] | null
+  input_type: string
+}
+
+export interface VIRResolutionView {
+  case_id: string
+  vir_execution_id: string
+  resolution_status: string
+  confidence: { score: number; level: string }
+  simulated: boolean
+  registration_country?: string | null
+  exact_factory_configuration_known: boolean
+  exact_factory_configuration_reasons: string[]
+  fields: VIRField[]
+  unknown_fields: string[]
+  user_declared_fields: string[]
+  user_confirmed_fields: string[]
+  contradictions: { field_path: string; severity: string; values: { source_id: string; value: unknown }[] }[]
+  alternative_candidates: {
+    candidate_id: string
+    source_ids: string[]
+    candidate_score: number
+    matching_fields: string[]
+    conflicting_fields: string[]
+    missing_fields: string[]
+  }[]
+  excluded_candidates: {
+    field_path: string
+    reason: string
+    reason_label: string
+    declared_value: unknown
+    candidate_value: unknown
+    source_ids: string[]
+    declaration_verified: boolean
+  }[]
+  descriptive_info: {
+    source_id: string
+    provider_field: string
+    label: string
+    value: string | number
+    unit: string | null
+    simulated: boolean
+  }[]
+  limitations: string[]
+  clarification_questions: Record<string, unknown>[]
+  confirmations: VIRConfirmable[]
+  confirmations_locked: boolean
+}
+
 export interface ClarificationAnswerSchema {
   question_id: string
   value: unknown
