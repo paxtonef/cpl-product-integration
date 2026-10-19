@@ -1,7 +1,8 @@
 # Guide de mise en ligne — montage PI / VIR / PGDR / CPL
 
 Guide unique d'installation et d'exploitation (préparation du 2026-10-19, actualisé au bloc 3B
-le même jour). Aucune valeur secrète ici ; les noms seuls. Ce guide décrit le fonctionnement
+le même jour, puis par la suite du bloc 3B « conservation et purge », branche PI
+`pi-3b-conservation-purge`). Aucune valeur secrète ici ; les noms seuls. Ce guide décrit le fonctionnement
 technique : il **n'approuve** ni une durée de conservation, ni des droits d'usage de
 fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Liste de réception :
 `docs/RECEPTION.md`.
@@ -10,7 +11,7 @@ fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Lis
 
 | Composant | Révision | Remarque |
 |---|---|---|
-| PI (`cpl-product-integration`) | branche `pi-3b-reception-livraison` (depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
+| PI (`cpl-product-integration`) | branche `pi-3b-conservation-purge` (depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
 | PGDR | `1c5a5cc041f66a959e5bb65918ca7e366223188e` (`v1-3b-reception`, depuis `v1-3a-securite` @ `48d5da4`, depuis `v1-propositions-photo` @ `7302c62`) | statut d'enregistrement du produit affiché sous la restitution ; marché de la notice documenté non vérifiable |
 | CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse ; schéma non modifié depuis |
@@ -119,7 +120,9 @@ fichier `root:cpl-produit` 0640 hors dépôt, ex. `/etc/cpl-produit/montage.env`
 | `VIR_DATABASE_PATH` | fichier SQLite de VIR (chemin absolu, persistant) |
 | `PI05_MEDIA_STORAGE_DIR` | médias envoyés (persistant) |
 | `PI_FRONTEND_DIST` | `$PREFIX/frontend-dist` (active le mode production) |
-| `VIR_RETENTION_DAYS` | durée de conservation VIR : **décision du propriétaire, non prise** (§9) |
+| `VIR_RETENTION_DAYS` | durée de conservation VIR (stockage VIR seulement) : **décision du propriétaire, non prise** (§9) |
+| `PI_CONSERVATION_IDENTIFIANTS_JOURS`, `PI_CONSERVATION_DOSSIERS_JOURS`, `PI_CONSERVATION_MEDIAS_JOURS`, `PI_CONSERVATION_JOURNAUX_JOURS`, `PI_CONSERVATION_SAUVEGARDES_JOURS` | politique de conservation par catégorie (§9) : nombre entier de jours ou `illimitee` ; **aucune valeur décidée, aucune par défaut** |
+| `SAUVEGARDES_DIR` | dossier des sauvegardes de `deploy/sauvegarder.sh` (§8) |
 
 Notice des voyants (lus par PGDR, voir le README de PGDR) : `PGDR_V1_MANIFEST` (notice revue,
 hors dépôt) et ses fichiers facultatifs `PGDR_V1_*`. **`PGDR_V1_TRI` doit rester absent en
@@ -195,8 +198,8 @@ PI et PGDR sont lancés sans journal d'accès d'uvicorn (`--no-access-log`) ; ch
 laisse une ligne avec le gabarit de route (ex. `POST /api/v1/parcours/{pid}{sub_path:path} 200`)
 ou un libellé fixe, jamais le chemin réel, la requête, un en-tête ou un corps ; une exception
 laisse sa seule classe et une réponse 500 simple. Le journal d'accès de VIR (`vir.log`) n'a pas
-été modifié. Rotation : à la charge de l'exploitant (ex. logrotate avec `copytruncate`) ; durée
-de conservation des journaux : décision restante (§9).
+été modifié. Rotation : à la charge de l'exploitant (ex. logrotate avec `copytruncate`) ; suppression des
+fichiers tournés échus par la purge (`PI_CONSERVATION_JOURNAUX_JOURS`, §9), durée non décidée.
 
 Unité systemd modèle : `deploy/systemd/cpl-produit.service`
 (`systemctl start|stop|restart|status cpl-produit`). Le script arrête tout le montage si l'un
@@ -227,68 +230,132 @@ avant la migration (§8), relancer.
 ## 8. Sauvegarde et restauration
 
 ```bash
-DEST=<dossier neuf> deploy/sauvegarder.sh     # postgresql.dump + vir.db (sauvegarde VIR) + medias.tar + SHA256SUMS
-SOURCE=<dossier> deploy/restaurer.sh          # SERVICES ARRÊTÉS ; vérifie les empreintes
+SAUVEGARDES_DIR=<dossier> deploy/sauvegarder.sh   # → SAUVEGARDES_DIR/pi-sauvegarde-<AAAAMMJJTHHMMSSZ>/
+DEST=<dossier neuf> deploy/sauvegarder.sh         # hors du nettoyage : jamais supprimée par les scripts
+SOURCE=<dossier> deploy/restaurer.sh              # SERVICES ARRÊTÉS ; vérifie les empreintes
+deploy/nettoyer_sauvegardes.sh [--executer]       # sauvegardes échues ; simulation par défaut
 ```
 
-La restauration remplace les objets PostgreSQL sauvegardés, fait restaurer VIR par sa propre
-commande (base actuelle mise de côté en `<base>.avant-restauration-<horodatage>`), renomme le
-dossier de médias actuel (`<dossier>.avant-restauration-<horodatage>`, jamais supprimé), puis
-contrôle le stockage VIR. Vérifié dans une base neuve (§12) : dossiers, résultats confirmés,
-provenance et droits identiques (le propriétaire lit, un autre compte reçoit 404).
+Une sauvegarde contient `postgresql.dump`, `vir.db` (sauvegarde VIR, chiffrée ; la clé n'y est
+pas), `medias.tar`, `SHA256SUMS`, `COMPOSITION.installee` et un `MANIFESTE` (format
+`pi-sauvegarde-1`, date de création UTC, liste exacte des fichiers). Dossier en 0700, fichiers en
+lecture seule (0400).
 
-Après restauration d'une sauvegarde ancienne, les données purgées depuis réapparaissent :
-lancer `deploy/purger.sh` aussitôt (VIR purge aussi à sa première écriture). Les copies
-« avant-restauration » contiennent les données de production : elles font partie du cycle des
-sauvegardes (§9) et sont à supprimer selon la même règle.
+**Nettoyage** (`nettoyer_sauvegardes.sh`, durée `PI_CONSERVATION_SAUVEGARDES_JOURS` depuis la date
+du manifeste) : ne supprime que les dossiers `pi-sauvegarde-<horodatage>` placés directement dans
+`SAUVEGARDES_DIR` et les dossiers de médias mis de côté par la restauration
+(`<PI05_MEDIA_STORAGE_DIR>.avant-restauration-<horodatage>`, manifeste `pi-avant-restauration-1`),
+et seulement si le manifeste et le contenu correspondent exactement ; un dossier contenant autre
+chose (fichier, sous-dossier, lien, clé) est « non reconnu », signalé et conservé. Aucun
+répertoire n'est vidé de façon générique. Sans politique : la simulation le dit, l'exécution est
+refusée. La copie de la base VIR mise de côté par VIR (`<base VIR>.avant-restauration-<horodatage>`)
+appartient à VIR : non traitée, suppression manuelle selon la même règle.
 
-## 9. Conservation des données — bilan
+**Les anciennes sauvegardes gardent les données qu'elles contiennent (plaque et VIN compris)
+jusqu'à leur propre échéance** : purger les données actives ne les efface pas, et aucune
+suppression immédiate n'est promise.
 
-Aucune durée n'est décidée par ce guide. « Durée configurée » = ce que fait le code aujourd'hui.
+**Restauration** : remplace les objets PostgreSQL sauvegardés, fait restaurer VIR par sa propre
+commande, met de côté le dossier de médias actuel (avec son manifeste, jamais supprimé ici) et
+contrôle le stockage VIR. Exige `MONTAGE_DIR`, `VIR_RETENTION_DAYS` et la politique (§9). Avant
+toute réouverture :
 
-| Données | Où | Durée configurée aujourd'hui | Mécanisme | Décision restante |
+1. `MONTAGE_DIR/RESTAURATION_A_PURGER` est posé dès le début ; `scripts/lancer_montage.sh` refuse
+   de démarrer tant qu'il existe ;
+2. le schéma PI est mis à jour (sauvegarde antérieure aux tables de traçage) ;
+3. `conservation.cli apres-restauration` révoque **toutes les sessions web** (les accès ne sont
+   pas restaurés : chacun se reconnecte), puis exécute la purge : les identifiants déjà échus
+   (l'échéance part de la date d'enregistrement, conservée dans la sauvegarde) sont vidés de
+   nouveau, les médias échus supprimés ; puis `purge-sessions` et `vir purge` ;
+4. le verrou n'est retiré qu'en cas de succès ; sinon (politique absente, erreur) le message
+   « politique de conservation NON appliquée : service fermé » est affiché et le verrou reste.
+
+Le script ne relance jamais le service : l'exploitant vérifie, puis le démarre explicitement.
+Vérifié (§12) : restauration dans une base neuve, purge avant ouverture, dossier lisible dans le
+navigateur, identification « no longer kept », session antérieure refusée.
+
+## 9. Conservation des données — politique et purge
+
+Aucune durée n'est décidée par ce guide ni par le code. Chaque catégorie a son réglage explicite ;
+absent, il vaut « non définie » (jamais un nombre) : la simulation dit « aucune politique, rien ne
+serait supprimé », l'exécution est refusée avant toute écriture. `VIR_RETENTION_DAYS` ne règle que
+le stockage VIR et n'est jamais repris pour une autre catégorie.
+
+| Catégorie | Réglage | Unité | Point de départ (implémenté) | Mécanisme |
 |---|---|---|---|---|
-| VIR : demandes, résolutions, preuves (chiffrées) | `VIR_DATABASE_PATH` | `VIR_RETENTION_DAYS`, **30 jours par défaut du code, non approuvés** ; échéance fixée à la création (changer la durée ne modifie pas les enregistrements existants) | purge automatique à chaque écriture VIR ; `vir purge` (via `deploy/purger.sh`, qui refuse tant que `VIR_RETENTION_DAYS` n'est pas fixé) | durée VIR |
-| CPL : dossiers, exécutions, artefacts (dont la résolution VIR avec plaque et VIN), résolutions d'identité, `vehicle_details`, résultats confirmés du parcours | PostgreSQL (`cpl`, `automotive`) | aucune limite | aucun | durée et règle de suppression ; plaque et VIN (§9.1) |
-| PI : comptes, empreintes de mots de passe | PostgreSQL (`pi_auth`) | tant que le compte existe | aucun | règle pour les comptes inactifs |
-| PI : sessions web | PostgreSQL (`pi_auth.web_sessions`) | 30 min d'inactivité, 12 h au plus (`PI_SESSION_*`) ; lignes expirées gardées jusqu'à la purge | `purge-sessions` (dans `deploy/purger.sh`) | fréquence de la purge |
-| PI : compteurs de connexion (HMAC) | PostgreSQL (`pi_auth.login_throttle`) | fenêtre de 15 min | `purge-sessions` | — |
-| Médias envoyés | `PI05_MEDIA_STORAGE_DIR` | aucune limite | aucun | durée |
-| Photo du parcours des voyants | non conservée (ni PI, ni PGDR, ni CPL) | — | — | — |
-| Parcours inachevé ; résultat non enregistré | mémoire de PI et PGDR | jusqu'au redémarrage (1000 parcours au plus) | — | — |
-| Journaux | `MONTAGE_DIR/{pi05,pgdr,vir}.log` | aucune limite (complétés) | rotation par l'exploitant | durée |
-| Sauvegardes et copies « avant-restauration » | `DEST` de `sauvegarder.sh`, à côté de la base VIR et du dossier de médias | aucune limite | suppression manuelle | lieu, durée, nombre |
+| Plaque et VIN et leurs copies dans CPL | `PI_CONSERVATION_IDENTIFIANTS_JOURS` | jours de 24 h (UTC) ou `illimitee` | `enregistrement_cpl` : date d'écriture dans CPL de l'enregistrement d'identification qui porte la copie | purge (§9.2) |
+| Dossiers et résultats (dont Premiers Constats) | `PI_CONSERVATION_DOSSIERS_JOURS` | idem | création du dossier | **aucune suppression possible** : CPL n'en prévoit aucune ; seule `illimitee` est exécutable, une durée est refusée |
+| Médias envoyés | `PI_CONSERVATION_MEDIAS_JOURS` | idem | `envoi` (date de l'envoi) | purge par âge ; fichiers supprimés, référence gardée « no longer kept » |
+| Journaux tournés | `PI_CONSERVATION_JOURNAUX_JOURS` | idem | dernière modification du fichier | suppression des seuls fichiers `pi05.log`, `pgdr.log`, `vir.log` suivis d'un suffixe de rotation (`.1`, `.2.gz`, `-AAAAMMJJ[.gz]`) ; les journaux actifs ne sont jamais touchés |
+| Sauvegardes et médias mis de côté | `PI_CONSERVATION_SAUVEGARDES_JOURS` | idem | date de création du manifeste | `deploy/nettoyer_sauvegardes.sh` (§8) |
+| VIR : demandes, résolutions, preuves (chiffrées) | `VIR_RETENTION_DAYS` (réglage existant de VIR) | jours | création, échéance fixée à la création | purge VIR à chaque écriture et `vir purge` ; **30 jours par défaut du code VIR, non approuvés** |
+| Sessions web, compteurs de connexion | `PI_SESSION_*` | minutes / heures | — | `purge-sessions` |
 
-- **30 jours ne sont pas une durée approuvée** (dépôt VIR, `docs/LIVRAISON_VIR_V1.md` §7).
-- **Supprimer des données actives n'efface pas les sauvegardes.** Une sauvegarde contient la
-  base PostgreSQL entière (CPL avec plaque et VIN, `pi_auth` avec empreintes de mots de passe et
-  de sessions), la base VIR (chiffrée ; la clé n'y est pas) et les médias. Elle vit jusqu'à sa
-  suppression manuelle ; restaurée, elle réintroduit ce qui avait été purgé (§8). La durée des
-  sauvegardes doit donc être décidée avec celle des données, et la purge relancée après toute
-  restauration.
-- Après la purge VIR, le dossier reste lisible ; les détails d'identité répondent « plus
-  conservés » (410 `VIR_RESULT_NOT_KEPT`, message dédié dans le frontend), une confirmation est
-  refusée de même, rien n'est écrit ; les résultats confirmés restent dans CPL.
-- Purge essayée sur données fictives (§12) : refus sans `VIR_RETENTION_DAYS` ; une session
-  expirée et un enregistrement VIR échu supprimés ; CPL, médias et sauvegarde inchangés.
+Points de départ possibles pour les identifiants : création (enregistrement), dernière
+confirmation par le conducteur, dernière consultation. **Un seul est implémenté,
+`enregistrement_cpl` ; le choix reste au propriétaire.** Une confirmation, correction ou un retrait
+du conducteur écrit un nouvel enregistrement qui ouvre sa propre période (l'ancien suit la sienne).
+La dernière consultation n'est enregistrée nulle part aujourd'hui.
 
-### 9.1 Plaque et VIN dans CPL — décision du propriétaire
+### 9.1 Plaque et VIN dans CPL — emplacements
 
-Relevé sur la base d'essai (requêtes sur toutes les colonnes texte et JSON des schémas `cpl`,
-`automotive`, `pi_auth`) ; le schéma CPL n'est pas modifié :
+Relevé sur la base d'essai (toutes les colonnes texte, JSON et tableaux des schémas `cpl`,
+`automotive`, `pi_auth`, après identification par VIN et par plaque, clarification, confirmation,
+Premier Constat) :
 
-| Emplacement | Contenu |
-|---|---|
-| `cpl.runner_artifacts.payload`, artefacts `vir_resolution` (un par résultat VIR enregistré, y compris après confirmation, correction ou retrait) | `vehicle_identity.identifiers.vin`, `vehicle_identity.identifiers.registration_number` ; et dans `field_evidence[]` : `resolved_value`, `sources[].reported_value`, `sources[].source_value` |
-| `cpl.asset_identity_resolutions.canonical_identity_payload` (résolution d'identité consommée pour l'actif) | `identifiers.vin`, `identifiers.registration_number` |
-| `automotive.vehicle_details` | `vin_display`, `registration_display` (avec `registration_country`) |
+| Emplacement | Contenu | Traitement par la purge |
+|---|---|---|
+| `cpl.asset_identity_resolutions.canonical_identity_payload` (une par résultat VIR enregistré, y compris confirmations, corrections, retraits) | `identifiers.vin`, `identifiers.registration_number` | vidés (null) ; `identifiers_not_kept` liste les champs retirés ; pays d'immatriculation, autres champs, statut, provenance et liens conservés |
+| `automotive.vehicle_details` | `vin_display`, `registration_display` | vidés quand aucun enregistrement d'identification encore dans sa période ne porte la même valeur ; marque, modèle, pays, `source_resolution_id` conservés |
+| `cpl.runner_artifacts.payload`, artefacts `vir_resolution` | identité, candidats, `field_evidence[]` | **non vidés** (§9.3) |
 
-Ni `pi_auth`, ni les résultats du parcours des voyants (`pgdr_v1_premier_constat`), ni le
-passage d'identité vers PGDR ne les contiennent. Conservation actuelle : **sans limite**, hors
-de toute purge, indépendante de la purge VIR (VIR peut avoir supprimé sa résolution alors que
-CPL en garde la copie), et incluse dans chaque sauvegarde. À décider par le propriétaire, avec
-la durée de conservation : garder ou non ces identifiants dans CPL, combien de temps, et selon
-quelle règle de suppression (aucune n'existe dans CPL aujourd'hui).
+Ni `pi_auth`, ni les Premiers Constats (`pgdr_v1_premier_constat`), ni le passage vers PGDR, ni les
+journaux ne contiennent plaque ou VIN. Les copies dans le stockage VIR suivent `VIR_RETENTION_DAYS`.
+
+### 9.2 Commandes
+
+```bash
+deploy/purger.sh                 # simulation : nombres par catégorie, rien n'est modifié (même sans politique)
+deploy/purger.sh --executer      # exécution : purge de conservation, puis purge-sessions et vir purge
+$PREFIX/venv/bin/python -m product_integration.conservation.cli controle   # contrôle de préparation
+deploy/nettoyer_sauvegardes.sh [--executer]                                # sauvegardes (§8)
+```
+
+Exécution : par lots (`--lot`, 200 par défaut), chacun dans sa transaction ; sur une erreur, le
+lot en cours est annulé, les précédents restent, la commande s'arrête (code 1, classe de l'erreur
+seulement) et la relance reprend le reste ; une deuxième exécution ne refait rien. Chaque
+exécution laisse une trace dans `pi_auth.conservation_operations` (politique, nombres, issue) et
+chaque copie vidée une ligne dans `pi_auth.identifier_expunctions` (noms des champs, opération) —
+jamais une valeur. Sorties : catégories et nombres seulement.
+
+Consultation après purge : le dossier, son historique et ses résultats confirmés restent lisibles
+par leur propriétaire (404 pour autrui) ; les détails d'identité répondent « plus conservés »
+(410 `VIR_RESULT_NOT_KEPT`, message du frontend « no longer kept »), même si VIR garde encore son
+résultat ; une confirmation ou clarification est refusée de même, rien n'est écrit. Un média purgé
+répond 410 `MEDIA_NOT_KEPT` (« This photo is no longer kept »). Les textes du constructeur et la
+sélection du conducteur ne sont pas modifiés.
+
+Médias : la purge par âge **ne garantit pas** l'absence de plaque ou de VIN dans les images encore
+conservées (contenu des pixels non vérifiable).
+
+Contrôle de préparation : signale toute catégorie non définie, une durée pour les dossiers,
+`VIR_RETENTION_DAYS` absent, un verrou de restauration, et rappelle la limite des artefacts. En mode
+production, `scripts/lancer_montage.sh` l'exécute et affiche un avertissement si la configuration
+est incomplète (sans bloquer : les durées ne sont pas décidées).
+
+### 9.3 Artefacts `vir_resolution` — expurgation impossible sans évolution de CPL
+
+Arrêt sur ce point, conformément à la consigne : CPL conserve chaque ligne d'artefact en entier
+(REQ-B6-058), ne corrige un contenu que par remplacement (supersession), qui garde l'ancienne
+ligne (REQ-B6-057/059), et signale tout contenu qui ne correspond plus à son `content_hash` sans
+jamais le corriger (REQ-B6-053 à 055). Vider la plaque et le VIN d'un artefact casserait ces
+invariants ; aucune requête directe ni désactivation de protection n'a été employée. Conséquence :
+**après purge, les artefacts `vir_resolution` échus gardent plaque et VIN dans PostgreSQL et dans
+les sauvegardes.** Ils ne sont pas servis par le produit (la route des artefacts retire déjà les
+identifiants) ; la purge les compte (« artefact(s) vir_resolution échu(s) gardent plaque et VIN »).
+Les lever demande une décision du propriétaire et une évolution de CPL (par exemple une expurgation
+gouvernée, avec trace et empreinte recalculée déclarée, au sens de la réserve « separate retention
+policy » de B4 §63), hors de cette passe.
 
 ## 10. Limites effectives
 
@@ -328,8 +395,9 @@ quelle règle de suppression (aucune n'existe dans CPL aujourd'hui).
 2. Instance PostgreSQL de production (accès local seulement) et emplacement des sauvegardes.
 3. Gestionnaire de secrets (ou fichier protégé) pour les valeurs du §4.
 4. Décisions du propriétaire sur la conservation (§9) : durée VIR (`VIR_RETENTION_DAYS`, les
-   30 jours par défaut **ne sont pas une durée approuvée**), CPL (dont plaque et VIN, §9.1),
-   médias, journaux, sauvegardes.
+   30 jours par défaut **ne sont pas une durée approuvée**), plaque et VIN (et point de départ),
+   dossiers (illimitée ou évolution de CPL), médias, journaux, sauvegardes ; sort des artefacts
+   `vir_resolution` (§9.3, évolution de CPL).
 5. Droits d'usage et contrats des fournisseurs VIR (RegCheck, Vincario) : **non acquis** ;
    tant qu'ils ne le sont pas, VIR reste en mode simulé ; aucune activation réelle autorisée.
 6. Décision de fusion des branches PI (`pi-3b-reception-livraison`), PGDR (`v1-3b-reception`)
@@ -341,6 +409,8 @@ quelle règle de suppression (aucune n'existe dans CPL aujourd'hui).
    marché (§10) ; validation des textes nouveaux (§10).
 
 ## 12. Vérification de la livraison (bloc 3B)
+
+Conservation et purge : `docs/build/PI_CONSERVATION_COMPTE_RENDU_v0.md`.
 
 Installation par `deploy/installer.sh` depuis les dépôts d'origine aux commits de
 `deploy/COMPOSITION.env`, sans réseau, dans un PREFIX neuf, puis migrations sur bases

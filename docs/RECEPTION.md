@@ -1,6 +1,6 @@
 # Liste de réception — blocs 1, 2 et 3
 
-Actualisée le 2026-10-19 (bloc 3B), sur la composition de `deploy/COMPOSITION.env` : PI
+Actualisée le 2026-10-19 (bloc 3B, puis conservation et purge : PI `pi-3b-conservation-purge`), sur la composition de `deploy/COMPOSITION.env` : PI
 `pi-3b-reception-livraison`, PGDR `1c5a5cc`, VIR `a4c0172`, CPL `bc09253`. Données et comptes
 fictifs, bases PostgreSQL temporaires (cluster dédié), réseau extérieur bloqué (garde des
 essais : toute connexion hors boucle locale refusée), aucun fournisseur réel, aucun tri réel.
@@ -71,4 +71,14 @@ compte rendu, §3.
 | 3.13 | Sauvegarde → restauration (base neuve) → résultats, provenance et droits conservés | réussi | V | [exécuté] |
 | 3.14 | Purge sur données fictives ; sauvegardes intactes | réussi | V | [exécuté] |
 | 3.15 | Bilan de conservation ; plaque et VIN dans CPL | documenté ; aucune durée décidée | guide §9, §9.1 | [documentation] |
-| 3.16 | Durées de conservation, activation réelle (fournisseurs, tri) | décisions du propriétaire, non prises | guide §11 | [non vérifiable] |
+| 3.15a | Politique explicite par catégorie, sans durée par défaut ni reprise de `VIR_RETENTION_DAYS` ; contrôle de préparation | réussi | T `test_conservation_purge.py` (politique, contrôle) | [exécuté] |
+| 3.15b | Simulation sans politique : « rien ne serait supprimé » ; exécution refusée, rien écrit | réussi | T `test_conservation_purge.py` | [exécuté] |
+| 3.15c | Purge des identifiants échus : résolutions et `vehicle_details` vidées (copies multiples, anciennes versions), marquées « non conservées », provenance, liens, dossiers, Premiers Constats et droits intacts ; trace sans valeur ; 2ᵉ exécution sans effet | réussi | T `test_conservation_purge.py` | [exécuté] |
+| 3.15d | Erreur en cours de purge : lot annulé, arrêt propre, relance qui termine | réussi | T `test_conservation_purge.py` | [exécuté] |
+| 3.15e | Artefacts `vir_resolution` : plaque et VIN **restent** (invariants CPL) ; non servis par le produit ; comptés | constaté ; arrêt sur ce point | guide §9.3 ; T `test_conservation_purge.py` | [exécuté] [non vérifiable] (levée : décision et évolution de CPL) |
+| 3.15f | Médias par âge ; référence « no longer kept » ; pixels non vérifiés | réussi (âge) | T `test_conservation_purge.py` ; unitaire `ErrorBanner` | [exécuté] [non vérifiable] (pixels) |
+| 3.15g | Journaux tournés échus supprimés, journaux actifs intacts | réussi | T `test_conservation_purge.py` | [exécuté] |
+| 3.15h | Sauvegardes : manifeste, 0700/0400, sans clé ; seules les sauvegardes échues reconnues supprimées, le reste intact | réussi | T `test_conservation_sauvegardes.py` | [exécuté] |
+| 3.15i | Restauration ancienne : verrou, démarrage refusé sans purge, sessions révoquées, identifiants échus vidés avant réouverture | réussi | T `test_conservation_sauvegardes.py` | [exécuté] |
+| 3.15j | Navigateur : dossier après purge et après restauration (identification « no longer kept », résultats confirmés intacts, session antérieure refusée) | réussi | T `test_conservation_navigateur.py` | [exécuté] |
+| 3.16 | Durées de conservation (et point de départ des identifiants), activation réelle (fournisseurs, tri) | décisions du propriétaire, non prises | guide §9, §11 | [non vérifiable] |
