@@ -13,6 +13,7 @@ import type {
   ContactResponse,
   DiagnosticResponse,
   ExecutionStatusResponse,
+  NoticeParcoursResponse,
   RegisterVehicleRequest,
   RegisterVehicleResponse,
   SessionResponse,
@@ -107,6 +108,14 @@ export const apiClient = {
     request<ExecutionStatusResponse>('GET', `/executions/${executionId}`),
   getArtifact: (executionId: string) =>
     request<ArtifactResponse>('GET', `/executions/${executionId}/artifact`),
+  // PGDR's V1 notice parcours for this case (opened or PGDR's own refusal).
+  openNoticeParcours: (caseId: string) => request<NoticeParcoursResponse>('POST', `/cases/${caseId}/notice-parcours`),
+}
+
+// A page served by the API itself (PGDR's notice parcours page). PGDR's page
+// calls /api/v1/parcours/... itself, so the API must be served under /api.
+export function apiPageUrl(page: string): string {
+  return `${BASE_URL}${page}`
 }
 
 export type ApiClient = typeof apiClient

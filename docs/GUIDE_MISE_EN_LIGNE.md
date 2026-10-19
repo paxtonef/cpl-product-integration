@@ -10,7 +10,7 @@ ni une durée de conservation, ni des droits d'usage de fournisseurs (§10).
 |---|---|---|
 | PI (`cpl-product-integration`) | branche `pi-preparation-production` (révision installée relevée dans `$PREFIX/COMPOSITION.installee`) | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
-| PGDR | `7b863c0bcef8fc1244c47b54a51e9cf4daa5e209` (`v1-premier-constat`) | non modifié |
+| PGDR | `7302c6299f6e132bd90557126411a2170ef7452d` (`v1-propositions-photo`, depuis `v1-premier-constat` @ `7b863c0`) | écran des images proposées et son tri (faux transport seul) |
 | CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
@@ -28,7 +28,8 @@ Internet ──HTTPS──▶ PI public (uvicorn, 1 processus) : /  frontend con
                                                        /health
                      │ boucle locale seulement
                      ├──▶ VIR  127.0.0.1:8001 (jeton de service X-VIR-Service-Token)
-                     ├──▶ PGDR 127.0.0.1:8002 (jeton du passage Photo-First)
+                     ├──▶ PGDR 127.0.0.1:8002 (jeton du passage Photo-First ; parcours des
+                     │                         voyants /v1 relayé par PI, propriétaire seul)
                      └──▶ PostgreSQL (local) : CPL (schémas cpl, automotive) + pi_auth
 ```
 
@@ -39,6 +40,13 @@ Internet ──HTTPS──▶ PI public (uvicorn, 1 processus) : /  frontend con
   Secure, SameSite=Strict ; jeton CSRF dérivé de la session pour les requêtes d'écriture.
   Les jetons entre services (PI→VIR, PI→PGDR) restent côté serveur.
 - **Un seul processus PI** (`--workers 1`) : les diagnostics PGDR en cours vivent en mémoire.
+- Parcours des voyants (PGDR /v1) : ouvert depuis un dossier par son propriétaire
+  (`POST /api/cases/{id}/notice-parcours`), puis servi par PI sous `/api/v1…` ; PI vérifie
+  à chaque requête que le parcours appartient à l'utilisateur connecté et ne relaie que les
+  requêtes de la page (liste fermée). Le registre des parcours est en mémoire, comme les
+  parcours de PGDR : perdu au redémarrage (l'utilisateur rouvre le parcours depuis le dossier).
+  L'API doit rester servie sous `/api` (la page de PGDR appelle `/api/v1/parcours/…`).
+  Détails : `docs/build/PI_PARCOURS_PHOTO_V1_COMPTE_RENDU_v0.md`.
 
 ## 3. Installation
 
@@ -76,6 +84,11 @@ fichier `root:cpl-produit` 0640 hors dépôt, ex. `/etc/cpl-produit/montage.env`
 | `PI05_MEDIA_STORAGE_DIR` | médias envoyés (persistant) |
 | `PI_FRONTEND_DIST` | `$PREFIX/frontend-dist` (active le mode production) |
 | `VIR_RETENTION_DAYS` | durée de conservation VIR : **décision du propriétaire, non prise** |
+
+Notice des voyants (lus par PGDR, voir le README de PGDR) : `PGDR_V1_MANIFEST` (notice revue,
+hors dépôt) et ses fichiers facultatifs `PGDR_V1_*`. **`PGDR_V1_TRI` doit rester absent en
+production** : le seul transport de tri existant est un faux transport d'essai ; sans lui, la
+photo reste sur l'appareil et le catalogue complet est affiché avec son explication.
 
 Facultatifs : `PI_SESSION_IDLE_MINUTES` (30), `PI_SESSION_MAX_HOURS` (12),
 `VIR_PROVIDER_MODE` (`simulated` ; seul mode démontré). `PI_COOKIE_SECURE=0` est refusé en
@@ -160,7 +173,12 @@ médias CPL/PI ne sont pas purgés : aucune règle n'est décidée.
   frontend l'indique ; PGDR répond `photo_analysis_unavailable` au passage Photo-First. Passage
   vers un fournisseur vision non implémenté : confidentialité de bout en bout non démontrée ;
   le contenu des pixels (plaque ou VIN visibles) n'est pas vérifiable.
-- PGDR : sessions de diagnostic en mémoire, un seul processus, perdues au redémarrage.
+- **Images proposées à partir de la photo** (parcours /v1, décision du propriétaire du
+  2026-10-19) : raccordées et vérifiées sur **faux transport de tri uniquement** ; qualité
+  réelle non démontrée, composant réel non autorisé. En production : tri absent, catalogue
+  complet avec explication.
+- PGDR : sessions de diagnostic et parcours des voyants en mémoire, un seul processus, perdus
+  au redémarrage.
 - VIR : mode `simulated` seul démontré ; aucun fournisseur réel consulté.
 - Verrouillage d'un compte 15 min après 5 échecs de connexion (aucune limitation par adresse :
   un tiers peut bloquer temporairement un compte dont il connaît l'identifiant).
@@ -181,4 +199,6 @@ médias CPL/PI ne sont pas purgés : aucune règle n'est décidée.
    tant qu'ils ne le sont pas, VIR reste en mode simulé.
 6. Décision de fusion des branches PI (`pi-preparation-production`) et CPL
    (`cpl-source-veracity-029`) ; migration réelle de la base jusqu'à 029.
-7. Analyse photo : nouveau mandat, qualification et autorisation distinctes (§9).
+7. Analyse photo : nouveau mandat, qualification et autorisation distinctes (§9) ; de même
+   pour tout composant réel de tri des images proposées (fournisseur, conservation, contrat,
+   évaluation de la qualité sur notice réelle).

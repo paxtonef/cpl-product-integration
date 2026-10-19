@@ -24,6 +24,7 @@ from product_integration.api.registry import PGDRSessionRegistry, default_regist
 from product_integration.auth import accounts
 from product_integration.auth.accounts import Principal
 from product_integration.media.storage import LocalMediaStorage
+from product_integration.pgdr.notice_parcours import NoticeParcoursRegistry, default_notice_registry
 from product_integration.vir.client import VIRClient
 
 # End users authenticate with a PI account (product_integration.auth): the
@@ -94,3 +95,16 @@ _default_media_storage = LocalMediaStorage(_MEDIA_STORAGE_DIR)
 
 def get_media_storage() -> LocalMediaStorage:
     return _default_media_storage
+
+
+# PGDR's V1 notice parcours (product_integration.pgdr.notice_parcours): PGDR on
+# the loopback at PI_PGDR_BASE_URL. trust_env=False: no proxy taken from the
+# environment ever sees a photo or a notice. Tests override this client with
+# an ASGI transport against PGDR's own app, as for VIR.
+async def get_pgdr_http_client() -> httpx.AsyncClient:
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+        yield client
+
+
+def get_notice_registry() -> NoticeParcoursRegistry:
+    return default_notice_registry

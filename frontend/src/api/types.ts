@@ -266,3 +266,11 @@ export interface ClarificationQuestionPayload {
   choices?: ClarificationChoice[] | null
   required?: boolean
 }
+
+// POST /cases/{case_id}/notice-parcours (product_integration.api.parcours_routes).
+export interface NoticeParcoursResponse {
+  status: string // "opened", or PGDR's refusal: vehicle_identity_insufficient, notice_unavailable,
+  // vehicle_not_supported, applicability_not_confirmed
+  page?: string | null
+  message?: string | null
+}

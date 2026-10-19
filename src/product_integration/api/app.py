@@ -10,6 +10,8 @@ from app.db.engine import engine
 from product_integration.api.errors import ProductAPIError, product_api_error_handler
 from product_integration.api.auth_routes import router as auth_router
 from product_integration.api.routes import router
+from product_integration.api.parcours_routes import relay_router as notice_relay_router
+from product_integration.api.parcours_routes import router as notice_router
 
 
 def health_route() -> JSONResponse:
@@ -29,6 +31,8 @@ def create_app(*, public_docs: bool = True) -> FastAPI:
     app.add_api_route("/health", health_route, methods=["GET"])
     app.include_router(auth_router)
     app.include_router(router)
+    app.include_router(notice_router)
+    app.include_router(notice_relay_router)
     app.add_exception_handler(ProductAPIError, product_api_error_handler)
     return app
 
