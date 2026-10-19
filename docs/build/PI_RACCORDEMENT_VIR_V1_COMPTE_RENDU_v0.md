@@ -167,6 +167,9 @@ par défaut sur ce poste).
 
 ## 10. Prérequis restant réellement nécessaires avant mise en ligne
 
+> **Actualisé le 2026-10-19 (§11)** : les points 1 (commit CPL), 2 (authentification PI-05) et
+> 7 (identifiants vers PGDR) sont traités ; les conditions restantes sont au §11.5.
+
 1. **CPL** : le propriétaire commite les changements « source-veracity » (2 fichiers + migration
    029) ; migration de la base réelle jusqu'à 029.
 2. **PI** : décision de fusion de `pi-raccord-vir-v1` ; PI-05 sans authentification ni
@@ -180,3 +183,75 @@ par défaut sur ce poste).
 7. **Décision** : transmission des identifiants (VIN, plaque) dans `vehicle_identity` vers PGDR.
 8. **Frontend** : la liste des pays (France seule) reflète le registre VIR actuel ; à mettre à
    jour si VIR active d'autres pays.
+
+## 11. Actualisation du 2026-10-19 — préparation de la mise en ligne
+
+Branche PI `pi-preparation-production` (depuis `pi-raccord-vir-v1` à `f5c0dca`) ; guide unique :
+`docs/GUIDE_MISE_EN_LIGNE.md`. Mêmes conditions d'essai qu'au §8 (bases fictives neuves,
+secrets fictifs générés, réseau extérieur bloqué par `sandbox-exec`, boucle locale seule).
+
+### 11.1 Composition testée
+
+| | Révision |
+|---|---|
+| PI | `pi-preparation-production` (commits `77e7b4d`, `3eea324`, `7d5834f`, `999e326`, `c3da0ec` et ce compte rendu) |
+| VIR | `a4c0172` (non modifié) |
+| PGDR | `7b863c0` (non modifié) |
+| CPL | `bc09253` (branche `cpl-source-veracity-029` : les 2 fichiers + migration 029 du §4, commités) |
+| GGM | 1.0.0 (`41459158…99a7`) |
+
+Installation par `deploy/installer.sh` depuis les dépôts d'origine (clones, révisions
+vérifiées, builds hors dépôts) : réussie, `pip check` sans erreur. [exécuté]
+
+### 11.2 Changements
+
+- **Authentification PI-05** : comptes PI (schéma `pi_auth` : identifiants scrypt, sessions
+  serveur à expiration d'inactivité et absolue, verrouillage), cookie HttpOnly/Secure/
+  SameSite=Strict, CSRF, identité et autorité CPL fixées côté serveur par requête ; plus
+  d'autorité globale. Propriété dérivée des données CPL existantes, sans changement de
+  schéma CPL : dossier → contact principal ; véhicule → relation contact–véhicule `OWNER`
+  (établie par `establish_relationship` de CPL) ; exécution/artefact → dossier ; média →
+  `pi_auth.media_ownership`. Refus identique à « inexistant ». Clés d'idempotence et
+  identifiants de requête VIR propres à chaque compte. [code] [exécuté]
+- **Identifiants vers PGDR** : liste blanche explicite dans `handoff_mapper` ; plaque, VIN,
+  pays d'immatriculation et date de 1re immatriculation retirés (PGDR ne les lit pas). [code] [exécuté]
+- **Vision** : aucune qualification ni autorisation (chantier clos le 2026-09-30, 7/7
+  configurations désactivées, rien de raccordé) ; refus `photo_analysis_unavailable` conservé,
+  indisponibilité affichée dans le frontend. [documentation] [exécuté]
+- **Déploiement** : point d'entrée public unique (`api/production.py`), `deploy/` (commits,
+  verrou, installation, migrations, sauvegarde/restauration, purge, unité systemd),
+  `lancer_montage.sh` en mode production. [code] [exécuté]
+
+### 11.3 Réception
+
+| Contrôle | Résultat |
+|---|---|
+| Suite PI contre le montage vivant | **254 passed, 0 failed, 0 skipped** [exécuté] |
+| Frontend : vitest / `tsc -b --noEmit` / build | 29 passed / PASS / PASS [exécuté] |
+| Playwright contre le point d'entrée HTTPS de production (frontend construit) | **13/13, deux fois** [exécuté] |
+| Réception à deux comptes (script, HTTPS) | **37/37** : refus sans session, cookie, CSRF, parcours VIN fictif + pays explicite, VIN sans pays refusé, diagnostic → résultat, historique, rafraîchissement, clarification, refus VIR-ERR-016 (502 typé, rien enregistré), média, 11 refus croisés identiques à « inexistant », listes séparées, déconnexion [exécuté] |
+| Contexte PGDR | 24 artefacts PGDR, 0 avec VIN/plaque/`identifiers`/1re immatriculation [exécuté] |
+| Journaux (996 lignes) | 0 jeton, clé, mot de passe, VIN, plaque, cookie de session, hash de session, trace d'exception [exécuté] |
+| Panne VIR (processus suspendu) | issue typée `VIR_TECHNICAL_FAILURE` après 10 s, pas de 500, aucun VIN [exécuté] |
+| Redémarrage | session web conservée ; diagnostic PGDR en attente → 409 `PROCESS_LOCAL_STATE_UNAVAILABLE` [exécuté] |
+| Arrêt d'un service | tout le montage s'arrête (code 1) pour relance par le superviseur [exécuté] |
+| Migrations | base neuve → 029 + pi_auth ; descente 028 puis remontée [exécuté] |
+| Sauvegarde → restauration (base vide) | comptes égaux (105 dossiers, 134 artefacts, 45 comptes, 11 médias), VIR intègre [exécuté] |
+| Compte initial | saisie masquée vérifiée sur pseudo-terminal ; mot de passe court refusé [exécuté] |
+| CPL `bc09253` | 228 passed, 0 skipped [exécuté] |
+
+Observations : VIR ignore un identifiant de question de clarification inconnu (statut
+inchangé, aucune erreur) et n'accepte comme « confirmation conducteur » que les champs
+confirmables ; la réponse de puissance du jeu `AM-BIG-01` est une saisie manuelle, conservée
+avec sa provenance. Comportement VIR, non modifié. [exécuté] `eslint src` ne s'exécute pas
+(aucune configuration ESLint dans le frontend, état antérieur). [exécuté]
+
+### 11.4 Lancement
+
+Voir `docs/GUIDE_MISE_EN_LIGNE.md` §3 à §6.
+
+### 11.5 Conditions externes restantes
+
+Serveur, domaine et certificat ; PostgreSQL de production ; gestionnaire de secrets ;
+durée de conservation VIR (non approuvée) ; droits d'usage fournisseurs (non acquis) ;
+décisions de fusion PI et CPL et migration réelle ; analyse photo (nouveau mandat). [documentation]
