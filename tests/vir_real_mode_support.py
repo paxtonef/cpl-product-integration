@@ -72,17 +72,26 @@ def vincario_body(variables: dict | None = None) -> bytes:
     return json.dumps({"decode": [{"label": k, "value": v} for k, v in (variables or VINCARIO_DECODE).items()]}).encode()
 
 
+def _note_call(log: str | None, provider: str) -> None:
+    """One line per provider call in `log` (bloc 3B: a browser spec counts the lookups across processes)."""
+    if log:
+        with open(log, "a", encoding="utf-8") as out:
+            out.write(provider + "\n")
+
+
 class FakeRegCheckTransport:
     """Same interface as vir.adapters.regcheck_adapter.UrllibTransport."""
     fictitious = True
 
-    def __init__(self, body: bytes | None = None):
+    def __init__(self, body: bytes | None = None, log: str | None = None):
         self.body = body if body is not None else regcheck_body()
         self.calls = 0
+        self.log = log
 
     def get(self, url, headers, timeout_s):
         from vir.adapters.regcheck_adapter import TransportResponse
         self.calls += 1
+        _note_call(self.log, "regcheck")
         return TransportResponse(200, self.body)
 
 
@@ -90,13 +99,15 @@ class FakeVincarioTransport:
     """Same interface as vir.adapters.vincario_adapter.UrllibTransport."""
     fictitious = True
 
-    def __init__(self, body: bytes | None = None):
+    def __init__(self, body: bytes | None = None, log: str | None = None):
         self.body = body if body is not None else vincario_body()
         self.calls = 0
+        self.log = log
 
     def get(self, url, timeout_s):
         from vir.adapters.vincario_adapter import TransportResponse
         self.calls += 1
+        _note_call(self.log, "vincario")
         return TransportResponse(200, self.body)
 
 
@@ -123,11 +134,13 @@ def create_real_mode_vir_app(regcheck_transport=None, vincario_transport=None):
     """A VIR application in real mode on fake transports, for a standalone
     loopback process (browser tests): uvicorn --factory
     tests.vir_real_mode_support:create_real_mode_vir_app. Environment
-    placeholders and the governance permission are set for this process."""
+    placeholders and the governance permission are set for this process.
+    VIR_FAKE_CALLS_LOG (optional): file receiving one line per provider call."""
     for name, value in FICTIVE_ENV.items():
         os.environ.setdefault(name, value)
     import vir.api.routes as vir_routes
     permit_real_adapters(setattr)
+    log = os.environ.get("VIR_FAKE_CALLS_LOG")
     vir_routes._DEFAULT_PROVIDERS = real_mode_providers(
-        regcheck_transport or FakeRegCheckTransport(), vincario_transport or FakeVincarioTransport())
+        regcheck_transport or FakeRegCheckTransport(log=log), vincario_transport or FakeVincarioTransport(log=log))
     return vir_routes.create_app(provider_mode="real")

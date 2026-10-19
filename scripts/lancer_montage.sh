@@ -16,8 +16,8 @@
 #   MONTAGE_DIR               dossier d'exécution et de journaux, sans .env
 # Optionnelles : VIR_PROVIDER_MODE (défaut simulated), VIR_PORT (8001),
 #   PGDR_PORT (8002), PI_PORT (8000), PI05_MEDIA_STORAGE_DIR (MONTAGE_DIR/media),
-#   PI_PUBLIC_ORIGIN (origine exacte du produit pour les écritures du parcours PGDR ;
-#   en développement derrière Vite : http://127.0.0.1:5173).
+#   PI_PUBLIC_ORIGIN (origine exacte du produit, exigée de toute écriture envoyée par un
+#   navigateur ; en développement derrière Vite : http://127.0.0.1:5173).
 #
 # Journaux : PI et PGDR sans journal d'accès d'uvicorn (--no-access-log, chemins et
 # requêtes porteurs d'identifiants) ; chacun écrit un gabarit de route par requête.

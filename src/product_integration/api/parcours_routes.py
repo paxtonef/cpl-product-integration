@@ -6,6 +6,8 @@
   GET  /v1?p=<parcours_id>                PGDR's /v1 page, relayed
   GET|POST /v1/parcours/{id}/...          PGDR's parcours requests, relayed for
                                           the parcours' owner only
+  POST /v1/parcours/{id}/record           PI alone (bloc 3B): records again a
+                                          confirmed result CPL did not record
 
 Under the public /api prefix these are exactly the paths PGDR's page uses
 (/api/v1/parcours/...), so the page runs unchanged on the product origin.
@@ -14,10 +16,8 @@ The relayed writes carry PI's own CSRF token (bloc 3A): PI places the
 session's token in the page it relays (<meta name="csrf-token">), PGDR's page
 sends it as X-CSRF-Token (PGDR 48d5da4), and PI compares it with the
 session's own, as for every product route. On top of it, each relayed write
-needs: an Origin equal to the product's origin (PI_PUBLIC_ORIGIN, or the
-scheme and Host this server sees -- uvicorn rewrites the scheme from
-X-Forwarded-Proto only for the proxies given to --forwarded-allow-ips, and
-PI never reads X-Forwarded-Host), Sec-Fetch-Site same-origin when the
+needs: an Origin equal to the product's origin (api.origin; required here,
+the page being a browser's only), Sec-Fetch-Site same-origin when the
 browser sends it, and a JSON body. The parcours owner is checked on every
 request; anything else is answered like a missing parcours. The SameSite
 cookie and Sec-Fetch-Site are kept but never relied on alone. No service
@@ -29,7 +29,6 @@ import base64
 import hashlib
 import html as html_lib
 import json
-import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -48,6 +47,7 @@ from product_integration.api.deps import (
     CSRF_HEADER, SESSION_COOKIE, get_notice_registry, get_pgdr_http_client, get_principal,
 )
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
+from product_integration.api.origin import cross_site
 from product_integration.api.routes import _find_vir_execution_and_artifact
 from product_integration.auth import accounts
 from product_integration.auth.accounts import Principal
@@ -70,6 +70,15 @@ _UNKNOWN = "Parcours inconnu ou expiré. Rouvrez la notice depuis votre dossier 
 _RESTITUTION_STEPS = ("/confirm", "/clarify", "/condition")  # PGDR answers them with the restitution
 logger = stderr_logger("product_integration.notice_parcours")
 _RELAYED_TYPES = ("application/json", "image/png", "image/jpeg")
+
+# The product's own record status, added to a restitution PGDR answered after an explicit confirmation (shown by
+# PGDR's page, which says nothing about a record without it). « Enregistré » only once CPL has committed it.
+_RECORDED = {"status": "recorded", "retry": False,
+             "message": "Résultat enregistré dans votre dossier : vous le retrouverez dans « Confirmed results »."}
+_NOT_RECORDED = {"status": "not_recorded", "retry": True, "retry_label": "Réessayer l'enregistrement",
+                 "message": "Résultat non enregistré : votre dossier n'a pas conservé ce résultat. Les textes de la "
+                            "notice affichés sur cette page restent ceux du constructeur. Vous pouvez réessayer "
+                            "l'enregistrement sans refaire le parcours."}
 
 
 class NoticeResultsResponse(BaseModel):
@@ -127,20 +136,9 @@ def _session(request: Request) -> Optional[Principal]:
     return accounts.resolve_session(request.cookies.get(SESSION_COOKIE))
 
 
-PUBLIC_ORIGIN_ENV = "PI_PUBLIC_ORIGIN"
-
-
-def product_origin(request: Request) -> str:
-    """PI_PUBLIC_ORIGIN when given, else the scheme and Host of the request as this server sees them."""
-    configured = os.environ.get(PUBLIC_ORIGIN_ENV, "").strip().rstrip("/")
-    return configured or f"{request.url.scheme}://{request.headers.get('host', '')}"
-
-
 def _write_refusal(request: Request, principal: Principal) -> Optional[JSONResponse]:
     """Why a relayed write is refused, or None. Each condition is required; none is enough alone."""
-    if request.headers.get("origin") != product_origin(request):
-        return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
-    if request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
+    if cross_site(request, origin_required=True):
         return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
     if not accounts.csrf_matches(principal, request.headers.get(CSRF_HEADER)):
         return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
@@ -196,6 +194,27 @@ async def _bounded_body(request: Request) -> Optional[bytes]:
     return b"".join(chunks)
 
 
+@relay_router.post("/v1/parcours/{pid}/record", include_in_schema=False)
+async def notice_record_retry_route(pid: str, request: Request,
+                                    registry: NoticeParcoursRegistry = Depends(get_notice_registry)):
+    """Records again the last confirmed result of the parcours, as it was confirmed: PI alone -- no request to
+    PGDR, no sorting, no VIR. Same conditions as a relayed write; owner only."""
+    principal = _session(request)
+    if principal is None:
+        return _refused(401, ProductAPIErrorCategory.AUTHENTICATION_REQUIRED, "Session expirée : reconnectez-vous.")
+    refusal = _write_refusal(request, principal)
+    if refusal is not None:
+        return refusal
+    owner = registry.owner(pid) if valid_parcours_id(pid) else None
+    if owner is None or owner.contact_id != principal.contact_id:
+        return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
+    kept = registry.last_record(pid)
+    if kept is None:
+        return _refused(409, ProductAPIErrorCategory.CONFLICT, "Aucun résultat confirmé à enregistrer.")
+    status = await _record(pid, owner, principal, kept[0], registry)
+    return JSONResponse({"product_record": status}, headers=_NO_STORE)
+
+
 @relay_router.api_route("/v1/parcours/{pid}{sub_path:path}", methods=["GET", "POST"], include_in_schema=False)
 async def notice_relay_route(
     pid: str, sub_path: str, request: Request, http: httpx.AsyncClient = Depends(get_pgdr_http_client),
@@ -232,32 +251,45 @@ async def notice_relay_route(
         return _refused(502, ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "Service des notices indisponible.")
     if response.status_code == 404:
         return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
+    content = response.content
     if method == "POST" and response.status_code == 200 and sub_path in _RESTITUTION_STEPS:
         if sub_path == "/confirm":
             registry.note_confirmation(pid, datetime.now(timezone.utc))
-        await _keep_result(pid, owner, principal, response.content, registry)
-    return Response(content=response.content, status_code=response.status_code, media_type=media, headers=_NO_STORE)
+        content = await _keep_result(pid, owner, principal, content, registry)
+    return Response(content=content, status_code=response.status_code, media_type=media, headers=_NO_STORE)
 
 
-async def _keep_result(pid: str, owner: ParcoursOwner, principal: Principal, content: bytes,
-                       registry: NoticeParcoursRegistry) -> None:
-    """Keeps in CPL a restitution PGDR produced after an explicit confirmation. If CPL refuses, nothing is
-    written and the driver still gets the manufacturer's texts (never withheld for want of a record); one
-    fixed log line says so."""
-    try:
-        state = json.loads(content)
-    except ValueError:
-        return
-    record = notice_results.build_record(
-        pid=pid, case_id=owner.case_id, owner_contact_id=owner.contact_id, vir=owner.vir_reference(), state=state,
-        confirmed_at=registry.confirmation(pid) or datetime.now(timezone.utc))
-    if record is None:
-        return
+async def _record(pid: str, owner: ParcoursOwner, principal: Principal, record: dict,
+                  registry: NoticeParcoursRegistry) -> dict:
+    """Writes the record in CPL (idempotent: the same record is never written twice) and returns the product's
+    record status. If CPL refuses, nothing is written; the record stays with the parcours for a retry."""
     try:
         await run_in_threadpool(notice_results.persist, record, case_id=owner.case_id, contact_id=owner.contact_id,
                                 actor_reference=principal.actor_reference)
     except Exception as exc:  # noqa: BLE001 -- the restitution is still shown; logged by class only
         logger.error("notice parcours result not recorded (%s)", type(exc).__name__)
+        registry.note_record(pid, record, recorded=False)
+        return dict(_NOT_RECORDED)
+    registry.note_record(pid, record, recorded=True)
+    return dict(_RECORDED)
+
+
+async def _keep_result(pid: str, owner: ParcoursOwner, principal: Principal, content: bytes,
+                       registry: NoticeParcoursRegistry) -> bytes:
+    """Keeps in CPL a restitution PGDR produced after an explicit confirmation, and adds the record status to it.
+    If CPL refuses, the driver still gets the manufacturer's texts (never withheld for want of a record), told
+    that the result is not recorded, with a retry; one fixed log line says so."""
+    try:
+        state = json.loads(content)
+    except ValueError:
+        return content
+    record = notice_results.build_record(
+        pid=pid, case_id=owner.case_id, owner_contact_id=owner.contact_id, vir=owner.vir_reference(), state=state,
+        confirmed_at=registry.confirmation(pid) or datetime.now(timezone.utc))
+    if record is None:
+        return content
+    state["product_record"] = await _record(pid, owner, principal, record, registry)
+    return json.dumps(state, ensure_ascii=False).encode("utf-8")
 
 
 @router.get("/cases/{case_id}/notice-results", response_model=NoticeResultsResponse)

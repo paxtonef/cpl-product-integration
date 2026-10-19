@@ -27,7 +27,9 @@ unchanged and not rebuilt here. PI adds only what the product needs:
 Process-local, like PGDR's parcours themselves (PGDR keeps them in memory):
 both are lost on restart and the user opens a new parcours from the case --
 explicitly, never presented as resumed. The confirmed result itself is kept
-in CPL (bloc 3A, product_integration.pgdr.notice_results).
+in CPL (bloc 3A, product_integration.pgdr.notice_results). A confirmed result
+CPL did not record is kept here with its parcours until a retry records it
+(bloc 3B): it is lost with the parcours on a restart.
 """
 from __future__ import annotations
 
@@ -90,14 +92,16 @@ class ParcoursOwner:
 
 
 class NoticeParcoursRegistry:
-    """parcours_id -> (case, owner, date of the last explicit confirmation).
-    Process-local, bounded like PGDR's own parcours store: an unfinished
-    parcours is lost on restart and is never presented as resumed. A
-    CONFIRMED result is kept in CPL (product_integration.pgdr.notice_results)."""
+    """parcours_id -> (case, owner, date of the last explicit confirmation,
+    last confirmed record and whether CPL holds it). Process-local, bounded
+    like PGDR's own parcours store: an unfinished parcours is lost on restart
+    and is never presented as resumed. A CONFIRMED result is kept in CPL
+    (product_integration.pgdr.notice_results)."""
 
     def __init__(self, limit: int = 1000) -> None:
         self._entries: "OrderedDict[str, ParcoursOwner]" = OrderedDict()
         self._confirmed: dict[str, datetime] = {}
+        self._records: dict[str, tuple[dict, bool]] = {}
         self._limit = limit
         self._lock = Lock()
 
@@ -107,6 +111,7 @@ class NoticeParcoursRegistry:
             while len(self._entries) > self._limit:
                 dropped, _ = self._entries.popitem(last=False)
                 self._confirmed.pop(dropped, None)
+                self._records.pop(dropped, None)
 
     def owner(self, pid: str) -> Optional[ParcoursOwner]:
         with self._lock:
@@ -120,6 +125,16 @@ class NoticeParcoursRegistry:
     def confirmation(self, pid: str) -> Optional[datetime]:
         with self._lock:
             return self._confirmed.get(pid)
+
+    def note_record(self, pid: str, record: dict, recorded: bool) -> None:
+        """The last confirmed record of the parcours, and whether CPL has committed it."""
+        with self._lock:
+            if pid in self._entries:
+                self._records[pid] = (record, recorded)
+
+    def last_record(self, pid: str) -> Optional[tuple[dict, bool]]:
+        with self._lock:
+            return self._records.get(pid)
 
     def __len__(self) -> int:
         with self._lock:

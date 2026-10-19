@@ -25,7 +25,8 @@ logger = stderr_logger("product_integration.audit")
 OPERATOR = "operator"
 UNRESOLVED = "-"
 OPERATIONS = frozenset({"password_change", "password_reset"})
-RESULTS = frozenset({"success", "refused", "refused_policy", "refused_unknown_login", "refused_input", "failure"})
+RESULTS = frozenset({"success", "refused", "refused_policy", "refused_unknown_login", "refused_input", "refused_config",
+                     "failure"})
 
 
 def account(account_id: Optional[UUID]) -> str:

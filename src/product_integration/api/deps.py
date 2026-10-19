@@ -20,6 +20,7 @@ from app.cpl.cases.authority import CaseAuthority
 from app.cpl.runners.authority import RunnerAuthority
 
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
+from product_integration.api.origin import cross_site
 from product_integration.api.registry import PGDRSessionRegistry, default_registry
 from product_integration.auth import accounts
 from product_integration.auth.accounts import Principal
@@ -52,8 +53,12 @@ def get_principal(request: Request) -> Principal:
     principal = accounts.resolve_session(request.cookies.get(SESSION_COOKIE))
     if principal is None:
         raise ProductAPIError(ProductAPIErrorCategory.AUTHENTICATION_REQUIRED, "authentication required")
-    if request.method not in _SAFE_METHODS and not accounts.csrf_matches(principal, request.headers.get(CSRF_HEADER)):
-        raise ProductAPIError(ProductAPIErrorCategory.CSRF_REJECTED, "missing or invalid CSRF token")
+    if request.method not in _SAFE_METHODS:
+        # Bloc 3B: a write the browser says comes from elsewhere is refused whatever its token (api.origin).
+        if cross_site(request):
+            raise ProductAPIError(ProductAPIErrorCategory.CSRF_REJECTED, "cross-site request refused")
+        if not accounts.csrf_matches(principal, request.headers.get(CSRF_HEADER)):
+            raise ProductAPIError(ProductAPIErrorCategory.CSRF_REJECTED, "missing or invalid CSRF token")
     return principal
 
 

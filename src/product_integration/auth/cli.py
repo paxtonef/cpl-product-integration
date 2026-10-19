@@ -74,6 +74,12 @@ def main(argv: list[str] | None = None) -> int:
             account_id = accounts.create_account(args.login, password, display_name=args.display_name)
             print(f"account created: {account_id}")
         elif args.command == "reset-password":
+            try:   # the reset clears the login's throttling, keyed with the service's secret: asked before anything
+                accounts.throttle_secrets()
+            except accounts.ThrottleSecretMissing as exc:
+                audit.record("password_reset", "refused_config", actor=audit.OPERATOR, target=audit.UNRESOLVED)
+                print(f"refused: {exc} (run the command with the service's environment)", file=sys.stderr)
+                return 2
             try:
                 password = _read_password(args.password_stdin)
             except accounts.AccountError:

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from product_integration.api.deps import SESSION_COOKIE, get_principal
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
+from product_integration.api.origin import same_origin_write
 from product_integration.auth import accounts
 from product_integration.auth.accounts import PasswordChangeRefused, Principal
 from product_integration.auth.passwords import MAX_PASSWORD_LENGTH, PasswordPolicyError
@@ -62,7 +63,7 @@ def _drop_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE, path="/", secure=_cookie_secure(), httponly=True, samesite="strict")
 
 
-@router.post("/auth/login", response_model=SessionResponse)
+@router.post("/auth/login", response_model=SessionResponse, dependencies=[Depends(same_origin_write)])
 def login_route(body: LoginRequest, request: Request, response: Response):
     response.headers["Cache-Control"] = "no-store"
     new_session = accounts.authenticate(body.login, body.password, _origin(request))
