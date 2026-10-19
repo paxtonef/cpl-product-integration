@@ -66,6 +66,8 @@ from product_integration.auth.ownership import (
     can_use_asset, not_found, owned_case, owned_execution, owns_media, record_media_owner, scoped_key,
 )
 from product_integration.media.storage import LocalMediaStorage, MediaValidationError
+from product_integration.conservation.identifiants import identification_not_kept
+from product_integration.conservation.medias import not_kept as media_not_kept
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
 from product_integration.api.registry import PGDRSessionRegistry
 from product_integration.api.schemas import (
@@ -230,6 +232,12 @@ def _find_vir_execution_and_artifact(session, case_id: UUID) -> tuple[RunnerExec
     )
     if vir_artifact is None:
         raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"no VIR artifact found for case {case_id}")
+    # Its plate and VIN were emptied by the conservation purge: the
+    # identification is no longer kept for the product, whatever VIR still
+    # holds (VIR's own retention is separate), and nothing may be written on it.
+    if identification_not_kept(session, vir_execution.execution_id):
+        raise ProductAPIError(ProductAPIErrorCategory.VIR_RESULT_NOT_KEPT, "this identification is no longer kept",
+                              extra={"case_id": str(case_id)})
     return vir_execution, vir_artifact
 
 
@@ -580,6 +588,11 @@ async def start_diagnostic_route(
             session, principal, body.primary_diagnostic_media_reference,
         ):
             raise not_found()
+        if body.primary_diagnostic_media_reference is not None and media_not_kept(
+            session, body.primary_diagnostic_media_reference,
+        ):
+            raise ProductAPIError(ProductAPIErrorCategory.MEDIA_NOT_KEPT, "this photo is no longer kept",
+                                  extra={"case_id": str(case_id)})
     session_controller = SessionController()
     result = await start_vehicle_diagnostic(
         case_id=case_id, session_controller=session_controller,

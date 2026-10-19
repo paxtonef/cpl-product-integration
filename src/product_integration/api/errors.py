@@ -121,6 +121,7 @@ class ProductAPIErrorCategory:
     # ended, or its store was restored to an earlier state) -> 410; the case
     # and the results CPL keeps are not affected.
     VIR_RESULT_NOT_KEPT = "VIR_RESULT_NOT_KEPT"
+    MEDIA_NOT_KEPT = "MEDIA_NOT_KEPT"
     UNEXPECTED = "UNEXPECTED"
 
 
@@ -144,6 +145,7 @@ _CATEGORY_TO_STATUS: dict[str, int] = {
     ProductAPIErrorCategory.CLARIFICATION_REFUSED: 422,
     ProductAPIErrorCategory.VIR_INPUT_REFUSED: 422,
     ProductAPIErrorCategory.VIR_RESULT_NOT_KEPT: 410,
+    ProductAPIErrorCategory.MEDIA_NOT_KEPT: 410,
     ProductAPIErrorCategory.UNEXPECTED: 500,
 }
 

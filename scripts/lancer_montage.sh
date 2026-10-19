@@ -49,6 +49,12 @@ if [ -e "$MONTAGE_DIR/.env" ]; then
   echo "MONTAGE_DIR ne doit pas contenir de .env (lu par VIR et CPL)." >&2
   exit 2
 fi
+# Restauration dont la politique de conservation n'a pas été appliquée (deploy/restaurer.sh) :
+# des identifiants échus et des sessions restaurées seraient de nouveau accessibles.
+if [ -e "$MONTAGE_DIR/RESTAURATION_A_PURGER" ]; then
+  echo "Restauration sans purge de conservation ($MONTAGE_DIR/RESTAURATION_A_PURGER) : démarrage refusé." >&2
+  exit 2
+fi
 
 VIR_PORT="${VIR_PORT:-8001}"
 PGDR_PORT="${PGDR_PORT:-8002}"
@@ -78,6 +84,10 @@ if [ -n "${PI_FRONTEND_DIST:-}" ]; then
       exit 2
     fi
   done
+  # Contrôle de préparation de la conservation : signalé (sortie d'erreur), sans bloquer le démarrage.
+  if ! python -m product_integration.conservation.cli controle > "$MONTAGE_DIR/controle-conservation.txt" 2>&1; then
+    echo "Avertissement : politique de conservation incomplète (détail : $MONTAGE_DIR/controle-conservation.txt)." >&2
+  fi
   if [ -n "${PI_TRUSTED_PROXIES:-}" ]; then
     proxy_flags=(--proxy-headers --forwarded-allow-ips "$PI_TRUSTED_PROXIES")
   else

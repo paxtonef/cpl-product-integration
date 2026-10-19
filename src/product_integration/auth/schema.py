@@ -17,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _UPGRADE_V1 = [
     "CREATE SCHEMA IF NOT EXISTS pi_auth",
@@ -79,6 +79,36 @@ _UPGRADE_V3 = [
 ]
 
 
+# Version 4 (conservation): the trace of each purge operation (policy and
+# counts, never a purged value), which identifier copy was emptied by which
+# operation, and when a medium's content was purged (the ownership row stays,
+# so the reference reads as "no longer kept", never as unknown).
+_UPGRADE_V4 = [
+    """CREATE TABLE IF NOT EXISTS pi_auth.conservation_operations (
+        operation_id uuid PRIMARY KEY,
+        started_at timestamptz NOT NULL DEFAULT now(),
+        finished_at timestamptz NULL,
+        trigger text NOT NULL CHECK (trigger IN ('operator', 'after_restore')),
+        policy jsonb NOT NULL,
+        counts jsonb NOT NULL DEFAULT '{}'::jsonb,
+        outcome text NOT NULL CHECK (outcome IN ('running', 'completed', 'interrupted')),
+        error_class text NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS pi_auth.identifier_expunctions (
+        target_kind text NOT NULL CHECK (target_kind IN ('asset_identity_resolution', 'vehicle_detail')),
+        target_id uuid NOT NULL,
+        fields text[] NOT NULL,
+        anchor_at timestamptz NULL,
+        operation_id uuid NOT NULL REFERENCES pi_auth.conservation_operations(operation_id) ON DELETE RESTRICT,
+        expunged_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (target_kind, target_id)
+    )""",
+    "ALTER TABLE pi_auth.media_ownership ADD COLUMN IF NOT EXISTS content_purged_at timestamptz NULL",
+    """ALTER TABLE pi_auth.media_ownership ADD COLUMN IF NOT EXISTS purge_operation_id uuid NULL
+        REFERENCES pi_auth.conservation_operations(operation_id) ON DELETE RESTRICT""",
+]
+
+
 def current_version(conn: Connection) -> int:
     exists = conn.execute(text("SELECT to_regclass('pi_auth.schema_version')")).scalar()
     if exists is None:
@@ -101,6 +131,10 @@ def upgrade(conn: Connection) -> int:
         for statement in _UPGRADE_V3:
             conn.execute(text(statement))
         conn.execute(text("INSERT INTO pi_auth.schema_version(version) VALUES (3)"))
+    if current_version(conn) < 4:
+        for statement in _UPGRADE_V4:
+            conn.execute(text(statement))
+        conn.execute(text("INSERT INTO pi_auth.schema_version(version) VALUES (4)"))
     return current_version(conn)
 
 

@@ -29,4 +29,11 @@ describe('ErrorBanner', () => {
     expect(alert).toHaveTextContent(/confirmed results are not affected/i)
     expect(alert).not.toHaveTextContent(/temporarily unavailable/i)
   })
+
+  it('says a photo past its conservation period is no longer kept (conservation)', () => {
+    render(<ErrorBanner error={new ApiError('MEDIA_NOT_KEPT', 'raw backend detail', 410)} />)
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(/photo is no longer kept/i)
+    expect(alert).not.toHaveTextContent(/raw backend detail|something went wrong/i)
+  })
 })

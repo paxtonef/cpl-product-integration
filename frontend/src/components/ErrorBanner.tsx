@@ -24,6 +24,7 @@ const CATEGORY_MESSAGE: Record<string, string> = {
   [ApiErrorCategory.VIR_RESULT_NOT_KEPT]:
     'The details of this vehicle identification are no longer kept (retention period ended). Your case and its ' +
     'confirmed results are not affected.',
+  [ApiErrorCategory.MEDIA_NOT_KEPT]: 'This photo is no longer kept (retention period ended). Please add a new photo.',
   [ApiErrorCategory.UNEXPECTED]: 'Something went wrong. Please try again.',
 }
 
