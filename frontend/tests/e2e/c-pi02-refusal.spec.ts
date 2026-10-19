@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { expect, test } from '@playwright/test'
+import { ensureSignedIn } from './helpers'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -26,8 +27,9 @@ function setupRefusalCase(): string {
   return output.trim()
 }
 
-test('C. PI-02 refusal: truthful non-admissible state, PGDR never starts', async ({ page, request }) => {
+test('C. PI-02 refusal: truthful non-admissible state, PGDR never starts', async ({ page }) => {
   const refusalCaseId = setupRefusalCase()
+  await ensureSignedIn(page, 'A')
 
   // The real user path: they already tried (or the fixture already
   // triggered) diagnostics start once, got refused, and are now viewing
@@ -41,7 +43,7 @@ test('C. PI-02 refusal: truthful non-admissible state, PGDR never starts', async
   // Never the clarification fallback message.
   await expect(page.getByText(/no further clarification is/i)).not.toBeVisible()
 
-  const historyResponse = await request.get(`/api/cases/${refusalCaseId}/history`)
+  const historyResponse = await page.request.get(`/api/cases/${refusalCaseId}/history`)
   const history = await historyResponse.json()
   expect(history.executions.filter((e: { runner_type: string }) => e.runner_type === 'PGDR')).toHaveLength(0)
 })

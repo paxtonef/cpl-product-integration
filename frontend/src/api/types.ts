@@ -7,16 +7,26 @@ export interface ContactResponse {
   display_name?: string | null
 }
 
-export interface CreateContactRequest {
-  contact_type?: string
-  display_name?: string | null
-  idempotency_key: string
+export interface SessionResponse {
+  account_id: string
+  contact_id: string
+  csrf_token: string
 }
 
+export interface CaseListEntry {
+  case_id: string
+  case_status: string
+  asset_id?: string | null
+  created_at?: string | null
+}
+
+export interface CaseListResponse {
+  cases: CaseListEntry[]
+}
+
+// The contact is always the signed-in user's own (fixed by the server).
 export interface RegisterVehicleRequest {
   existing_contact_id?: string | null
-  contact_type?: string
-  display_name?: string | null
   asset_domain?: string
   asset_type?: string
   contact_idempotency_key: string

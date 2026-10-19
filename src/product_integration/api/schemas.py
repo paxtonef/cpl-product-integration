@@ -69,6 +69,17 @@ class StartCaseRequest(BaseModel):
     case_idempotency_key: str
 
 
+class CaseListEntry(BaseModel):
+    case_id: UUID
+    case_status: str
+    asset_id: Optional[UUID] = None
+    created_at: Optional[str] = None
+
+
+class CaseListResponse(BaseModel):
+    cases: list[CaseListEntry] = Field(default_factory=list)
+
+
 class CaseVIRResponse(BaseModel):
     outcome: str
     contact_id: Optional[UUID] = None

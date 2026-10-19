@@ -100,6 +100,10 @@ class ProductAPIErrorCategory:
     CPL_PERSISTENCE_FAILURE = "CPL_PERSISTENCE_FAILURE"
     CASE_ORCHESTRATION_FAILURE = "CASE_ORCHESTRATION_FAILURE"
     PROCESS_LOCAL_STATE_UNAVAILABLE = "PROCESS_LOCAL_STATE_UNAVAILABLE"
+    # End-user authentication (PI accounts): no valid session -> 401; an
+    # unsafe request without the session's CSRF token -> 403.
+    AUTHENTICATION_REQUIRED = "AUTHENTICATION_REQUIRED"
+    CSRF_REJECTED = "CSRF_REJECTED"
     UNEXPECTED = "UNEXPECTED"
 
 
@@ -114,6 +118,8 @@ _CATEGORY_TO_STATUS: dict[str, int] = {
     ProductAPIErrorCategory.CPL_PERSISTENCE_FAILURE: 502,
     ProductAPIErrorCategory.CASE_ORCHESTRATION_FAILURE: 502,
     ProductAPIErrorCategory.PROCESS_LOCAL_STATE_UNAVAILABLE: 409,
+    ProductAPIErrorCategory.AUTHENTICATION_REQUIRED: 401,
+    ProductAPIErrorCategory.CSRF_REJECTED: 403,
     ProductAPIErrorCategory.UNEXPECTED: 500,
 }
 

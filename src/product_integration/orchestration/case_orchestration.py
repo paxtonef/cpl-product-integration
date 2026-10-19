@@ -73,6 +73,7 @@ from app.cpl.identity.contacts import create_contact, get_contact
 from app.cpl.identity.outcomes import OperationOutcome
 from app.cpl.assets.authority import AssetAuthority
 from app.cpl.assets.creation import create_asset
+from app.cpl.assets.relationships import establish_relationship
 from app.cpl.cases.authority import CaseAuthority
 from app.cpl.cases.lifecycle import create_case, transition_case_status
 from app.cpl.cases.outcomes import CaseOutcome
@@ -104,6 +105,7 @@ from product_integration.vir.schemas import VehicleIdentityRequest
 # enum, confirmed by reading app/cpl/models/case.py directly) -- these are
 # this product's own chosen values, not CPL-mandated ones.
 CASE_DOMAIN = "AUTOMOTIVE"
+OWNER_RELATIONSHIP = "OWNER"
 CASE_TYPE = "VEHICLE_DIAGNOSTIC"
 
 
@@ -215,6 +217,7 @@ def register_vehicle_for_contact(
     contact_idempotency_key: str,
     asset_idempotency_key: str,
     existing_contact_id: Optional[UUID] = None,
+    owner_relationship_idempotency_key: Optional[str] = None,
 ) -> RegistrationResult:
     """§8: ensure a product user/contact has a registered vehicle
     represented in CPL. No VIR resolution happens here (§8 — identity
@@ -225,7 +228,11 @@ def register_vehicle_for_contact(
     If `existing_contact_id` is supplied, it is looked up via `get_contact`
     rather than creating a new Contact — a Contact may register multiple
     vehicles, and a vehicle may be diagnosed multiple times, so this
-    function is deliberately reusable rather than tied to a single Case."""
+    function is deliberately reusable rather than tied to a single Case.
+
+    With `owner_relationship_idempotency_key`, the Contact is also recorded
+    as the vehicle's OWNER through CPL's own `establish_relationship`, in
+    the same transaction: the record per-owner access is derived from."""
     with session_scope() as session:
         try:
             if existing_contact_id is not None:
@@ -271,6 +278,23 @@ def register_vehicle_for_contact(
                 contact_id=contact_id,
                 detail=f"create_asset outcome {asset_result.outcome!r}: {asset_result.detail}",
             )
+        if owner_relationship_idempotency_key is not None:
+            try:
+                relationship = establish_relationship(
+                    session, contact_id=contact_id, asset_id=asset_result.object_id,
+                    relationship_type=OWNER_RELATIONSHIP, evidence={"basis": "registered by the account holder"},
+                    source="pi-account-registration", authority=authority,
+                    idempotency_key=owner_relationship_idempotency_key,
+                )
+            except AuthorityDeniedError as exc:
+                session.rollback()
+                return RegistrationResult(outcome=RegistrationOutcome.AUTHORITY_REJECTION, detail=str(exc))
+            if relationship.outcome != OperationOutcome.SUCCESS:
+                session.rollback()
+                return RegistrationResult(
+                    outcome=_map_operation_outcome(relationship.outcome), contact_id=contact_id,
+                    detail=f"establish_relationship outcome {relationship.outcome!r}",
+                )
         session.commit()
         return RegistrationResult(outcome=RegistrationOutcome.SUCCESS, contact_id=contact_id, asset_id=asset_result.object_id)
 

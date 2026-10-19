@@ -13,6 +13,8 @@ const CATEGORY_MESSAGE: Record<string, string> = {
     "Your last action was recorded, but we're still catching up your case status. Please refresh in a moment.",
   [ApiErrorCategory.PROCESS_LOCAL_STATE_UNAVAILABLE]:
     "This diagnostic session can no longer accept an answer here. Please contact support to continue this case.",
+  [ApiErrorCategory.AUTHENTICATION_REQUIRED]: 'Invalid login or password.',
+  [ApiErrorCategory.CSRF_REJECTED]: 'Your session needs to be refreshed. Please reload the page.',
   [ApiErrorCategory.UNEXPECTED]: 'Something went wrong. Please try again.',
 }
 

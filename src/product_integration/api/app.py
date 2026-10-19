@@ -4,11 +4,13 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from product_integration.api.errors import ProductAPIError, product_api_error_handler
+from product_integration.api.auth_routes import router as auth_router
 from product_integration.api.routes import router
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="CPL Product Integration API", version="0.1.0")
+    app.include_router(auth_router)
     app.include_router(router)
     app.add_exception_handler(ProductAPIError, product_api_error_handler)
     return app

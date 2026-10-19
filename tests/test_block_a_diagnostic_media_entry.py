@@ -17,9 +17,11 @@ import pytest
 
 BASE_URL = "http://127.0.0.1:8000"
 
+from tests.auth_support import live_client, upload_media  # noqa: E402  (every PI-05 route needs a session)
+
 
 def _register_and_resolve() -> str:
-    with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+    with live_client(BASE_URL) as client:
         vehicle = client.post(
             "/vehicles",
             json={
@@ -47,17 +49,17 @@ class TestBlockAAcceptance:
         """AC1: starting a diagnostic with ONLY a primary diagnostic media
         reference (no complaint_text) succeeds at the API level."""
         case_id = _register_and_resolve()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
-                json={"primary_diagnostic_media_reference": "media-ref-block-a-001"},
+                json={"primary_diagnostic_media_reference": upload_media(client)},
             )
         assert response.status_code in (200, 201), response.text
 
     def test_2_existing_text_only_path_unchanged(self):
         """AC2: the existing text-only diagnostic path remains unaffected."""
         case_id = _register_and_resolve()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"complaint_text": "Le moteur fait un bruit étrange."},
@@ -68,7 +70,7 @@ class TestBlockAAcceptance:
         """AC3 (validation boundary): omitting both fields is rejected,
         never silently accepted as an empty diagnostic."""
         case_id = _register_and_resolve()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             response = client.post(f"/cases/{case_id}/diagnostics", json={})
         assert response.status_code == 422
 
@@ -83,8 +85,8 @@ class TestBlockAAcceptance:
         chain (API -> orchestration -> PI-03 adapter -> PGDRAdapterResult
         -> DiagnosticStartResult -> DiagnosticResponse)."""
         case_id = _register_and_resolve()
-        ref = f"media-ref-boundary-{uuid.uuid4().hex[:8]}"
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
+            ref = upload_media(client)  # only the user's own uploaded media is accepted
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"primary_diagnostic_media_reference": ref},
@@ -103,8 +105,8 @@ class TestBlockAAcceptance:
         from app.cpl.models.runner_governance_decision import RunnerGovernanceDecision
 
         case_id = _register_and_resolve()
-        ref = f"media-ref-not-in-governance-{uuid.uuid4().hex[:8]}"
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
+            ref = upload_media(client)
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"primary_diagnostic_media_reference": ref},

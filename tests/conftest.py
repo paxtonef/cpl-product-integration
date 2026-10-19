@@ -56,6 +56,11 @@ def migrate_cpl():
         cfg.set_main_option("script_location", str(_cpl_alembic_ini().parent / "migrations"))
         command.upgrade(cfg, "head")
 
+        # PI's own end-user account schema (pi_auth), on top of CPL's chain.
+        from product_integration.auth import schema as pi_auth_schema
+        with engine.begin() as conn:
+            pi_auth_schema.upgrade(conn)
+
 
 def _cpl_alembic_ini():
     import app

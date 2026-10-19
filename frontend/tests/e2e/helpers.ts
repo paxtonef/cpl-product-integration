@@ -1,11 +1,39 @@
 import { type Page, expect } from '@playwright/test'
 
+// Fictitious accounts created beforehand with the operator command
+// (python -m product_integration.auth.cli create-account --password-stdin);
+// their logins and passwords are given to the run through the environment.
+export function credentials(user: 'A' | 'B' = 'A'): { login: string; password: string } {
+  const login = process.env[`E2E_LOGIN_${user}`]
+  const password = process.env[`E2E_PASSWORD_${user}`]
+  if (!login || !password) throw new Error(`E2E_LOGIN_${user} / E2E_PASSWORD_${user} are not set`)
+  return { login, password }
+}
+
+export async function signIn(page: Page, user: 'A' | 'B' = 'A') {
+  const { login, password } = credentials(user)
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  await page.getByLabel('Login').fill(login)
+  await page.getByLabel('Password').fill(password)
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeHidden()
+}
+
+export async function ensureSignedIn(page: Page, user: 'A' | 'B' = 'A') {
+  await page.goto('/')
+  const signInHeading = page.getByRole('heading', { name: 'Sign in' })
+  const home = page.getByRole('heading', { name: 'Vehicle diagnostic' })
+  await expect(signInHeading.or(home)).toBeVisible()
+  if (await signInHeading.isVisible()) await signIn(page, user)
+  await expect(home).toBeVisible()
+}
+
 export async function registerAndResolveVehicle(
   page: Page,
-  opts: { vin?: string; registrationNumber?: string } = {},
+  opts: { vin?: string; registrationNumber?: string; user?: 'A' | 'B' } = {},
 ): Promise<string> {
+  await ensureSignedIn(page, opts.user ?? 'A')
   await page.goto('/register')
-  await page.getByLabel('Your name').fill('E2E Test User')
   await page.getByRole('button', { name: 'Register' }).click()
   await expect(page.getByRole('heading', { name: 'Vehicle identity' })).toBeVisible()
 

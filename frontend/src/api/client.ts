@@ -1,21 +1,21 @@
-// The one bounded typed API-client boundary for PI-05 (structuring §18).
-// Exactly one method per real PI-05 route -- 11 total. Explicitly includes
-// createContact/getContact: PI-06-VF-01 found the structuring document's own
-// summary list omitted these two, but the authoritative API->UI mapping
-// table (structuring §5) always required them; this build accounts for
-// them, per the build instruction's own explicit §10 requirement.
+// The one bounded typed API-client boundary for PI-05 (structuring §18):
+// one method per real PI-05 route. Contact creation is no longer a web
+// operation (accounts and their contacts are created by the operator
+// command), so createContact is gone; login/logout/session and the user's
+// own case list were added with authentication.
 import { toApiError } from './errors'
 import type {
   ArtifactResponse,
   CaseHistoryResponse,
+  CaseListResponse,
   CaseStatusResponse,
   CaseVIRResponse,
   ContactResponse,
-  CreateContactRequest,
   DiagnosticResponse,
   ExecutionStatusResponse,
   RegisterVehicleRequest,
   RegisterVehicleResponse,
+  SessionResponse,
   StartCaseRequest,
   StartDiagnosticRequest,
   SubmitAnswerRequest,
@@ -24,20 +24,58 @@ import type {
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// The session itself is an HttpOnly cookie this code never sees; the only
+// value held here is the CSRF token PI-05 hands out at login (and again on
+// GET /auth/session after a reload), sent back on every unsafe request.
+let csrfToken: string | null = null
+const unauthenticatedListeners = new Set<() => void>()
+
+export function onUnauthenticated(listener: () => void): () => void {
+  unauthenticatedListeners.add(listener)
+  return () => unauthenticatedListeners.delete(listener)
+}
+
+async function send(method: string, path: string, body?: unknown): Promise<Response> {
+  const headers: Record<string, string> = {}
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (method !== 'GET' && csrfToken) headers['X-CSRF-Token'] = csrfToken
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers,
+    credentials: 'same-origin',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (!response.ok) {
+    if (response.status === 401 && path !== '/auth/login') {
+      csrfToken = null
+      unauthenticatedListeners.forEach((listener) => listener())
+    }
     throw await toApiError(response)
   }
-  return (await response.json()) as T
+  return response
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return (await (await send(method, path, body)).json()) as T
+}
+
+async function openSession(path: string, body?: unknown): Promise<SessionResponse> {
+  const session = await request<SessionResponse>(body === undefined ? 'GET' : 'POST', path, body)
+  csrfToken = session.csrf_token
+  return session
 }
 
 export const apiClient = {
-  createContact: (body: CreateContactRequest) => request<ContactResponse>('POST', '/contacts', body),
+  login: (login: string, password: string) => openSession('/auth/login', { login, password }),
+  restoreSession: () => openSession('/auth/session'),
+  logout: async () => {
+    try {
+      await send('POST', '/auth/logout')
+    } finally {
+      csrfToken = null
+    }
+  },
+  listCases: () => request<CaseListResponse>('GET', '/cases'),
   getContact: (contactId: string) => request<ContactResponse>('GET', `/contacts/${contactId}`),
   registerVehicle: (body: RegisterVehicleRequest) =>
     request<RegisterVehicleResponse>('POST', '/vehicles', body),

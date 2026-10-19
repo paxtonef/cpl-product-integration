@@ -27,6 +27,8 @@ from product_integration.api.deps import get_vir_client, get_pgdr_registry
 from product_integration.api.registry import PGDRSessionRegistry
 from product_integration.vir.client import VIRClient
 
+from tests.auth_support import log_in, new_account
+
 NOISE_COMPLAINT = "The engine makes a strange noise when accelerating."
 SMOKE_COMPLAINT = "There is smoke coming from under the hood and a burning smell."
 
@@ -56,6 +58,7 @@ async def api_client(vir_isolated_store):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
         client.app = app  # stash for tests that need to swap dependency overrides
+        await log_in(client, *new_account("pi05"))  # every PI-05 route needs an authenticated user
         yield client
 
 
@@ -214,8 +217,10 @@ class TestHTTPBlockedContinuation:
             f"/cases/{case_b['case_id']}/diagnostics/{diag_a['execution_id']}/answers",
             json={"question_id": "x", "value": "y"},
         )
+        # Answered like a missing object (preparation for production, block 3),
+        # so a mismatch never confirms that the execution exists.
         assert r.status_code == 404
-        assert r.json()["error_category"] == "CROSS_RESOURCE_MISMATCH"
+        assert r.json()["error_category"] == "NOT_FOUND"
 
 
 class TestHTTPPI02Refusal:
@@ -317,7 +322,10 @@ class TestProcessRestartContinuation:
         restarted_app.dependency_overrides[get_vir_client] = override_vir_client
         restarted_app.dependency_overrides[get_pgdr_registry] = lambda: fresh_registry
         restarted_transport = httpx.ASGITransport(app=restarted_app)
-        async with httpx.AsyncClient(transport=restarted_transport, base_url="http://api.test") as restarted_client:
+        # Same session cookie: web sessions are stored in PostgreSQL and
+        # survive the process restart; only PGDR's in-memory state does not.
+        async with httpx.AsyncClient(transport=restarted_transport, base_url="http://api.test",
+                                     headers=api_client.headers) as restarted_client:
             q = diag["pending_questions"][0]
             answer_value = q["choices"][0] if q.get("choices") else "yes"
             r2 = await restarted_client.post(
@@ -354,7 +362,8 @@ class TestRestartDurability:
         new_app = create_app()
         new_app.dependency_overrides[get_vir_client] = override_vir_client
         new_transport = httpx.ASGITransport(app=new_app)
-        async with httpx.AsyncClient(transport=new_transport, base_url="http://api.test") as new_client:
+        async with httpx.AsyncClient(transport=new_transport, base_url="http://api.test",
+                                     headers=api_client.headers) as new_client:
             r = await new_client.get(f"/cases/{case['case_id']}")
             assert r.status_code == 200
             assert r.json()["case_status"] == "RESOLVED"

@@ -5,6 +5,10 @@ doesn't wrap -- contact-only creation/retrieval and VIR clarification --
 directly to the existing CPL/PI-01 functions, per §6's explicit allowance:
 "use existing CPL/product-integration read paths ... without duplicating
 domain behavior"). No VIR/PGDR/Case domain logic is reimplemented here.
+
+Every route requires an authenticated end user (router-level dependency)
+and reaches only that user's objects (product_integration.auth.ownership);
+an object of another user is answered exactly like a missing one.
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from sqlalchemy import desc
 
 from app.cpl.identity.authority import AuthorityContext, AuthorityDeniedError
-from app.cpl.identity.contacts import create_contact, get_contact
+from app.cpl.identity.contacts import get_contact
 from app.cpl.identity.outcomes import OperationOutcome
 from app.cpl.models.case import Case
 from app.cpl.models.runner_artifact import RunnerArtifact
@@ -54,7 +58,11 @@ from product_integration.pgdr.session_adapter import PGDRSessionOutcome
 from product_integration.vir.client import VIRClient
 from product_integration.vir.errors import VIRClientError, VIRTechnicalFailureError
 
-from product_integration.api.deps import get_authority, get_media_storage, get_pgdr_registry, get_vir_client
+from product_integration.api.deps import get_authority, get_media_storage, get_pgdr_registry, get_principal, get_vir_client
+from product_integration.auth.accounts import Principal
+from product_integration.auth.ownership import (
+    can_use_asset, not_found, owned_case, owned_execution, owns_media, record_media_owner, scoped_key,
+)
 from product_integration.media.storage import LocalMediaStorage, MediaValidationError
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
 from product_integration.api.registry import PGDRSessionRegistry
@@ -62,9 +70,10 @@ from product_integration.api.schemas import (
     ArtifactResponse,
     CaseHistoryResponse,
     CaseStatusResponse,
+    CaseListEntry,
+    CaseListResponse,
     CaseVIRResponse,
     ContactResponse,
-    CreateContactRequest,
     DiagnosticQuestionSchema,
     DiagnosticResponse,
     ExecutionStatusResponse,
@@ -78,34 +87,24 @@ from product_integration.api.schemas import (
     SubmitClarificationRequest,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_principal)])
 
 
 # -- contacts (§8) -------------------------------------------------------
 
-@router.post("/contacts", response_model=ContactResponse, status_code=201)
-def create_contact_route(body: CreateContactRequest, authority: AuthorityContext = Depends(get_authority)):
-    with session_scope() as session:
-        try:
-            result = create_contact(
-                session, contact_type=body.contact_type, display_name=body.display_name,
-                authority=authority, idempotency_key=body.idempotency_key,
-            )
-        except AuthorityDeniedError as exc:
-            raise ProductAPIError(ProductAPIErrorCategory.AUTHORITY_REJECTION, str(exc))
-        if result.outcome != OperationOutcome.SUCCESS:
-            session.commit()
-            raise ProductAPIError(ProductAPIErrorCategory.CONFLICT, f"create_contact outcome {result.outcome!r}")
-        session.commit()
-        return ContactResponse(contact_id=result.object_id, contact_type=body.contact_type, display_name=body.display_name)
-
+# Contacts are created with their account by the operator command
+# (product_integration.auth.cli), never through a web request.
 
 @router.get("/contacts/{contact_id}", response_model=ContactResponse)
-def get_contact_route(contact_id: UUID, authority: AuthorityContext = Depends(get_authority)):
+def get_contact_route(
+    contact_id: UUID, authority: AuthorityContext = Depends(get_authority), principal: Principal = Depends(get_principal),
+):
+    if contact_id != principal.contact_id:
+        raise not_found()
     with session_scope() as session:
         result = get_contact(session, contact_id, authority=authority)
         if result.outcome != OperationOutcome.SUCCESS:
-            raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"contact {contact_id} not found")
+            raise not_found()
         session.commit()
         return ContactResponse(contact_id=contact_id)
 
@@ -113,11 +112,20 @@ def get_contact_route(contact_id: UUID, authority: AuthorityContext = Depends(ge
 # -- vehicles (§9) -------------------------------------------------------
 
 @router.post("/vehicles", response_model=RegisterVehicleResponse, status_code=201)
-def register_vehicle_route(body: RegisterVehicleRequest, authority: AuthorityContext = Depends(get_authority)):
+def register_vehicle_route(
+    body: RegisterVehicleRequest, authority: AuthorityContext = Depends(get_authority),
+    principal: Principal = Depends(get_principal),
+):
+    # The vehicle is always registered for the authenticated user's own
+    # Contact, recorded as its OWNER; a contact named in the body is only
+    # accepted when it is that same Contact.
+    if body.existing_contact_id is not None and body.existing_contact_id != principal.contact_id:
+        raise not_found()
+    asset_key = scoped_key(principal, body.asset_idempotency_key)
     result = register_vehicle_for_contact(
-        existing_contact_id=body.existing_contact_id, contact_type=body.contact_type, display_name=body.display_name,
-        asset_domain=body.asset_domain, asset_type=body.asset_type, authority=authority,
-        contact_idempotency_key=body.contact_idempotency_key, asset_idempotency_key=body.asset_idempotency_key,
+        existing_contact_id=principal.contact_id, asset_domain=body.asset_domain, asset_type=body.asset_type,
+        authority=authority, contact_idempotency_key=scoped_key(principal, body.contact_idempotency_key),
+        asset_idempotency_key=asset_key, owner_relationship_idempotency_key=asset_key + "-owner",
     )
     if result.outcome != RegistrationOutcome.SUCCESS:
         category = (
@@ -145,13 +153,32 @@ def _build_real_vir_request(body: StartCaseRequest) -> RealVIRRequest:
     return RealVIRRequest(**kwargs)
 
 
+@router.get("/cases", response_model=CaseListResponse)
+def list_cases_route(principal: Principal = Depends(get_principal)):
+    with session_scope() as session:
+        cases = (
+            session.query(Case).filter(Case.primary_contact_id == principal.contact_id)
+            .order_by(desc(Case.created_at)).limit(200).all()
+        )
+        return CaseListResponse(cases=[
+            CaseListEntry(case_id=c.case_id, case_status=c.case_status, asset_id=c.asset_id,
+                          created_at=c.created_at.isoformat() if c.created_at else None)
+            for c in cases
+        ])
+
+
 @router.post("/cases", response_model=CaseVIRResponse, status_code=201)
 async def start_case_route(
     body: StartCaseRequest, authority: AuthorityContext = Depends(get_authority),
-    vir_client: VIRClient = Depends(get_vir_client),
+    vir_client: VIRClient = Depends(get_vir_client), principal: Principal = Depends(get_principal),
 ):
+    if body.contact_id != principal.contact_id:
+        raise not_found()
+    with session_scope() as session:
+        if not can_use_asset(session, principal, body.asset_id):
+            raise not_found()
     from product_integration.vir.schemas import VehicleIdentityRequest as ProductVIRRequest, ConsentInput as ProductConsentInput
-    product_request_kwargs: dict = {"request_id": body.request_id, "consent": ProductConsentInput(external_lookup_allowed=body.consent.external_lookup_allowed)}
+    product_request_kwargs: dict = {"request_id": scoped_key(principal, body.request_id), "consent": ProductConsentInput(external_lookup_allowed=body.consent.external_lookup_allowed)}
     if body.vin:
         product_request_kwargs["vin"] = body.vin
     if body.registration_number or body.registration_country_code:
@@ -162,7 +189,7 @@ async def start_case_route(
 
     result = await resolve_vehicle_identity(
         contact_id=body.contact_id, asset_id=body.asset_id, vir_client=vir_client, vir_request=vir_request,
-        authority=authority, case_idempotency_key=body.case_idempotency_key,
+        authority=authority, case_idempotency_key=scoped_key(principal, body.case_idempotency_key),
     )
     return CaseVIRResponse(
         outcome=result.outcome, contact_id=result.contact_id, asset_id=result.asset_id, case_id=result.case_id,
@@ -194,15 +221,13 @@ def _find_vir_execution_and_artifact(session, case_id: UUID) -> tuple[RunnerExec
 @router.post("/cases/{case_id}/vir/clarifications", response_model=CaseVIRResponse)
 async def submit_clarification_route(
     case_id: UUID, body: SubmitClarificationRequest, authority: AuthorityContext = Depends(get_authority),
-    vir_client: VIRClient = Depends(get_vir_client),
+    vir_client: VIRClient = Depends(get_vir_client), principal: Principal = Depends(get_principal),
 ):
     """§12/§38: uses PI-01's already-repaired clarification path
     (register_vir_resolution_result, Path B) directly -- no second
     clarification mechanism, no fresh duplicate VIR resolve."""
     with session_scope() as session:
-        case = session.get(Case, case_id)
-        if case is None:
-            raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"case {case_id} not found")
+        case = owned_case(session, principal, case_id)
         vir_execution, vir_artifact = _find_vir_execution_and_artifact(session, case_id)
         original_resolution_id = vir_artifact.payload.get("resolution_id")
         asset_id = case.asset_id
@@ -249,11 +274,9 @@ async def submit_clarification_route(
 # -- case status / history (§16/§18) -------------------------------------------------------
 
 @router.get("/cases/{case_id}", response_model=CaseStatusResponse)
-def get_case_route(case_id: UUID):
+def get_case_route(case_id: UUID, principal: Principal = Depends(get_principal)):
     with session_scope() as session:
-        case = session.get(Case, case_id)
-        if case is None:
-            raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"case {case_id} not found")
+        case = owned_case(session, principal, case_id)
         return CaseStatusResponse(
             case_id=case.case_id, case_status=case.case_status, current_execution_id=case.current_execution_id,
             contact_id=case.primary_contact_id, asset_id=case.asset_id,
@@ -261,11 +284,9 @@ def get_case_route(case_id: UUID):
 
 
 @router.get("/cases/{case_id}/history", response_model=CaseHistoryResponse)
-def get_case_history_route(case_id: UUID):
+def get_case_history_route(case_id: UUID, principal: Principal = Depends(get_principal)):
     with session_scope() as session:
-        case = session.get(Case, case_id)
-        if case is None:
-            raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"case {case_id} not found")
+        case = owned_case(session, principal, case_id)
         executions = (
             session.query(RunnerExecution)
             .filter(RunnerExecution.case_id == case_id)
@@ -293,11 +314,9 @@ def get_case_history_route(case_id: UUID):
 # -- executions / artifacts (§15/§17) -------------------------------------------------------
 
 @router.get("/executions/{execution_id}", response_model=ExecutionStatusResponse)
-def get_execution_status_route(execution_id: UUID):
+def get_execution_status_route(execution_id: UUID, principal: Principal = Depends(get_principal)):
     with session_scope() as session:
-        execution = session.get(RunnerExecution, execution_id)
-        if execution is None:
-            raise ProductAPIError(ProductAPIErrorCategory.NOT_FOUND, f"execution {execution_id} not found")
+        execution = owned_execution(session, principal, execution_id)
         artifact = (
             session.query(RunnerArtifact)
             .filter(RunnerArtifact.execution_id == execution_id)
@@ -314,8 +333,9 @@ def get_execution_status_route(execution_id: UUID):
 
 
 @router.get("/executions/{execution_id}/artifact", response_model=ArtifactResponse)
-def get_execution_artifact_route(execution_id: UUID):
+def get_execution_artifact_route(execution_id: UUID, principal: Principal = Depends(get_principal)):
     with session_scope() as session:
+        owned_execution(session, principal, execution_id)
         artifact = (
             session.query(RunnerArtifact)
             .filter(RunnerArtifact.execution_id == execution_id)
@@ -378,6 +398,7 @@ def _diagnostic_response(result, case_id: UUID) -> DiagnosticResponse:
 async def upload_media_route(
     file: UploadFile = File(...),
     media_storage: LocalMediaStorage = Depends(get_media_storage),
+    principal: Principal = Depends(get_principal),
 ) -> MediaUploadResponse:
     """Block B1.5 — the real media-ingress boundary. Accepts an actual
     uploaded image (multipart/form-data), never an arbitrary string
@@ -393,14 +414,24 @@ async def upload_media_route(
         media_id = media_storage.store(content, file.content_type or "")
     except MediaValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with session_scope() as session:
+        record_media_owner(session, principal, media_id)
+        session.commit()
     return MediaUploadResponse(media_id=media_id)
 
 
 @router.post("/cases/{case_id}/diagnostics", response_model=DiagnosticResponse)
 async def start_diagnostic_route(
     case_id: UUID, body: StartDiagnosticRequest, response: Response, authority: AuthorityContext = Depends(get_authority),
-    registry: PGDRSessionRegistry = Depends(get_pgdr_registry),
+    registry: PGDRSessionRegistry = Depends(get_pgdr_registry), principal: Principal = Depends(get_principal),
 ):
+    with session_scope() as session:
+        owned_case(session, principal, case_id)
+        # Only media this user uploaded; any other reference is unknown.
+        if body.primary_diagnostic_media_reference is not None and not owns_media(
+            session, principal, body.primary_diagnostic_media_reference,
+        ):
+            raise not_found()
     session_controller = SessionController()
     result = await start_vehicle_diagnostic(
         case_id=case_id, session_controller=session_controller,
@@ -435,17 +466,16 @@ async def start_diagnostic_route(
 @router.post("/cases/{case_id}/diagnostics/{execution_id}/answers", response_model=DiagnosticResponse)
 async def submit_answer_route(
     case_id: UUID, execution_id: UUID, body: SubmitAnswerRequest, authority: AuthorityContext = Depends(get_authority),
-    registry: PGDRSessionRegistry = Depends(get_pgdr_registry),
+    registry: PGDRSessionRegistry = Depends(get_pgdr_registry), principal: Principal = Depends(get_principal),
 ):
-    # §31 resource-consistency check: the execution must genuinely belong
-    # to the claimed case before anything else happens.
+    # §31 resource-consistency check: the case must be the user's own, and
+    # the execution must genuinely belong to it, before anything else
+    # happens; any mismatch is answered like a missing object.
     with session_scope() as session:
+        owned_case(session, principal, case_id)
         execution = session.get(RunnerExecution, execution_id)
         if execution is None or execution.case_id != case_id:
-            raise ProductAPIError(
-                ProductAPIErrorCategory.CROSS_RESOURCE_MISMATCH,
-                f"execution {execution_id} does not belong to case {case_id}",
-            )
+            raise not_found()
 
     entry = registry.get(execution_id)
     if entry is None:

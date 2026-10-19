@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { registerAndResolveVehicle } from './helpers'
+import { ensureSignedIn } from './helpers'
 
 // B. VIR clarification path (structuring §21-B): the real AMBIGUOUS-
 // triggering fixture (registration_number "AM-BIG-01", confirmed at PI-01's
@@ -15,8 +15,8 @@ import { registerAndResolveVehicle } from './helpers'
 // behavior under repair, asserted directly rather than forced via a
 // manual page.goto.
 test('B. VIR clarification path: automatic routing, then clarify and continue', async ({ page }) => {
+  await ensureSignedIn(page)
   await page.goto('/register')
-  await page.getByLabel('Your name').fill('E2E Test User')
   await page.getByRole('button', { name: 'Register' }).click()
   await expect(page.getByRole('heading', { name: 'Vehicle identity' })).toBeVisible()
   await page.getByLabel("Registration number (if you don't have the VIN)").fill('AM-BIG-01')

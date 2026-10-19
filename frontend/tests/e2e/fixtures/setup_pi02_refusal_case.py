@@ -12,6 +12,7 @@ else, so the calling script can capture it directly.
 """
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 
@@ -28,9 +29,25 @@ from vir.domain.enums import ConfidenceLevel, ResolutionStatus as VIRStatus
 from vir.domain.models import Confidence as VIRConfidence, VehicleIdentityResolution as VIRRes
 
 
+def _cookie(response: httpx.Response) -> str:
+    from http.cookies import SimpleCookie
+    for header in response.headers.get_list("set-cookie"):
+        cookie = SimpleCookie()
+        cookie.load(header)
+        if "pi_session" in cookie:
+            return cookie["pi_session"].value
+    raise RuntimeError("login set no session cookie")
+
+
 def main() -> None:
     api_base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
     client = httpx.Client(base_url=api_base_url)
+    # Every PI-05 route needs a session: sign in as journey user A (the same
+    # fictitious account the browser uses), carrying the cookie explicitly.
+    login = client.post("/auth/login", json={"login": os.environ["E2E_LOGIN_A"], "password": os.environ["E2E_PASSWORD_A"]})
+    login.raise_for_status()
+    client.headers["Cookie"] = f"pi_session={_cookie(login)}"
+    client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
 
     vehicle = client.post(
         "/vehicles",

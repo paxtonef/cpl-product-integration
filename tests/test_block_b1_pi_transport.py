@@ -9,9 +9,11 @@ import httpx
 
 BASE_URL = "http://127.0.0.1:8000"
 
+from tests.auth_support import live_client, upload_media  # noqa: E402  (every PI-05 route needs a session)
+
 
 def _register_and_resolve() -> str:
-    with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+    with live_client(BASE_URL) as client:
         vehicle = client.post(
             "/vehicles",
             json={
@@ -46,8 +48,8 @@ class TestB1PITransport:
         from app.cpl.models.runner_governance_decision import RunnerGovernanceDecision
 
         case_id = _register_and_resolve()
-        ref = f"media-ref-b1-transport-{uuid.uuid4().hex[:8]}"
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
+            ref = upload_media(client)  # only the user's own uploaded media is accepted
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"primary_diagnostic_media_reference": ref},
@@ -104,7 +106,7 @@ class TestB1PITransport:
         """B1-AC07: existing text-only diagnostic behaviour continues to
         work, unaffected by the new typed media contract."""
         case_id = _register_and_resolve()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             response = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"complaint_text": "Le moteur fait un bruit étrange."},

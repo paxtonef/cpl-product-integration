@@ -11,7 +11,7 @@ PI-04, CPL, or PGDR themselves.
 """
 from __future__ import annotations
 
-from fastapi import Depends
+from fastapi import Depends, Request
 import httpx
 
 from app.cpl.identity.authority import Authority, AuthorityContext
@@ -19,32 +19,45 @@ from app.cpl.assets.authority import AssetAuthority
 from app.cpl.cases.authority import CaseAuthority
 from app.cpl.runners.authority import RunnerAuthority
 
+from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
 from product_integration.api.registry import PGDRSessionRegistry, default_registry
+from product_integration.auth import accounts
+from product_integration.auth.accounts import Principal
 from product_integration.media.storage import LocalMediaStorage
 from product_integration.vir.client import VIRClient
 
-# No authentication/authorization platform exists in the product baseline
-# (§31 -- "not required to invent a complete authentication system unless
-# one already exists"), so this API grants every PI-04/CPL authority its
-# own routes could ever need, uniformly, to every request. Real
-# authorization-by-resource-consistency (§31's actual requirement) is
-# enforced separately, per-route, by checking that the resource IDs in the
-# request genuinely relate to each other (see routes.py) -- that check is
-# independent of, and not weakened by, this broad authority grant.
-_FULL_AUTHORITY = AuthorityContext(
-    granted=frozenset({
-        Authority.CREATE_CONTACT, Authority.READ_IDENTITY,
-        AssetAuthority.CREATE_ASSET, AssetAuthority.CONSUME_IDENTITY_RESOLUTION,
-        CaseAuthority.CREATE_CASE, CaseAuthority.TRANSITION_CASE_STATUS, CaseAuthority.READ_CASE,
-        RunnerAuthority.ADMIT_EXECUTION, RunnerAuthority.TRANSITION_EXECUTION_STATUS,
-        RunnerAuthority.REGISTER_ARTIFACT,
-    }),
-    actor_reference="pi05-product-api",
-)
+# End users authenticate with a PI account (product_integration.auth): the
+# session cookie fixes the Principal server-side, and the CPL authority is
+# built from it for that one request. The operations granted are the ones
+# the product journey performs; *which* rows they may touch is enforced by
+# the per-owner checks in product_integration.auth.ownership, derived from
+# CPL's own records (case primary contact, contact-asset relationships).
+# No contact creation (accounts are made by the operator command), no
+# authority taken from a header, a body or a login name.
+SESSION_COOKIE = "pi_session"
+CSRF_HEADER = "X-CSRF-Token"
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+_END_USER_GRANTS = frozenset({
+    Authority.READ_IDENTITY,
+    AssetAuthority.CREATE_ASSET, AssetAuthority.MANAGE_RELATIONSHIP, AssetAuthority.CONSUME_IDENTITY_RESOLUTION,
+    CaseAuthority.CREATE_CASE, CaseAuthority.TRANSITION_CASE_STATUS, CaseAuthority.READ_CASE,
+    RunnerAuthority.ADMIT_EXECUTION, RunnerAuthority.TRANSITION_EXECUTION_STATUS,
+    RunnerAuthority.REGISTER_ARTIFACT,
+})
 
 
-def get_authority() -> AuthorityContext:
-    return _FULL_AUTHORITY
+def get_principal(request: Request) -> Principal:
+    principal = accounts.resolve_session(request.cookies.get(SESSION_COOKIE))
+    if principal is None:
+        raise ProductAPIError(ProductAPIErrorCategory.AUTHENTICATION_REQUIRED, "authentication required")
+    if request.method not in _SAFE_METHODS and not accounts.csrf_matches(principal, request.headers.get(CSRF_HEADER)):
+        raise ProductAPIError(ProductAPIErrorCategory.CSRF_REJECTED, "missing or invalid CSRF token")
+    return principal
+
+
+def get_authority(principal: Principal = Depends(get_principal)) -> AuthorityContext:
+    return AuthorityContext(granted=_END_USER_GRANTS, actor_reference=principal.actor_reference)
 
 
 # The VIR base URL is a module-level, overridable value rather than a

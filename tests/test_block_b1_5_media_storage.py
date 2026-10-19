@@ -18,6 +18,8 @@ from pgdr.ports.media_resolver import MediaResolutionError, MediaResolverPort
 
 BASE_URL = "http://127.0.0.1:8000"
 
+from tests.auth_support import live_client, upload_media  # noqa: E402  (every PI-05 route needs a session)
+
 _REAL_JPEG_BYTES = bytes.fromhex(
     "ffd8ffe000104a46494600010100000100010000ffdb004300"
     + "10" * 61
@@ -26,7 +28,7 @@ _REAL_JPEG_BYTES = bytes.fromhex(
 
 
 def _register_and_resolve() -> str:
-    with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+    with live_client(BASE_URL) as client:
         vehicle = client.post(
             "/vehicles",
             json={
@@ -118,7 +120,7 @@ class TestB15EndToEnd:
         """B1.5-AC01/AC02/AC03: a real image can be uploaded through the
         product boundary, the system stores it, and the upload returns an
         opaque stable media reference."""
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             resp = client.post("/media", files={"file": ("dashboard.jpg", _REAL_JPEG_BYTES, "image/jpeg")})
         assert resp.status_code == 201, resp.text
         media_id = resp.json()["media_id"]
@@ -128,7 +130,7 @@ class TestB15EndToEnd:
     def test_ac04_media_id_accepted_by_existing_diagnostic_transport(self):
         """B1.5-AC04: the reference is accepted by the existing Primary
         Diagnostic Media transport (Block B1, unmodified)."""
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             media_id = client.post(
                 "/media", files={"file": ("d.jpg", _REAL_JPEG_BYTES, "image/jpeg")}
             ).json()["media_id"]
@@ -145,7 +147,7 @@ class TestB15EndToEnd:
         actual media content -- real HTTP upload, then real resolution,
         byte-for-byte, hash-verified."""
         original_hash = hashlib.sha256(_REAL_JPEG_BYTES).hexdigest()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             media_id = client.post(
                 "/media", files={"file": ("d.jpg", _REAL_JPEG_BYTES, "image/jpeg")}
             ).json()["media_id"]
@@ -158,12 +160,12 @@ class TestB15EndToEnd:
 
     def test_ac08_rejects_unsupported_media_type_via_real_http(self):
         """B1.5-AC08: unsupported media is rejected."""
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             resp = client.post("/media", files={"file": ("d.txt", b"not an image", "text/plain")})
         assert resp.status_code == 422
 
     def test_ac08_rejects_empty_upload_via_real_http(self):
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             resp = client.post("/media", files={"file": ("d.jpg", b"", "image/jpeg")})
         assert resp.status_code == 422
 
@@ -189,22 +191,29 @@ class TestB15EndToEnd:
     def test_ac11_existing_text_only_path_still_works(self):
         """B1.5-AC11: existing text diagnostic path remains operational."""
         case_id = _register_and_resolve()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             resp = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"complaint_text": "Bruit inhabituel au freinage."},
             )
         assert resp.status_code in (200, 201), resp.text
 
-    def test_ac12_existing_b1_reference_only_transport_still_works(self):
-        """B1.5-AC12: existing B1 media transport (an arbitrary reference
-        string, not necessarily from a real upload) remains operational --
-        B1.5 is additive, it does not require every reference to have come
-        through /media."""
+    def test_ac12_reference_not_uploaded_by_the_user_is_refused(self):
+        """B1.5-AC12, superseded by the preparation for production (block 3):
+        an arbitrary reference string that did not come from this user's own
+        /media upload is no longer transported -- it is refused exactly like
+        a missing object, so no user can point PGDR at another user's media.
+        The user's own uploaded reference still travels the same B1 path."""
         case_id = _register_and_resolve()
-        with httpx.Client(base_url=BASE_URL, timeout=30) as client:
+        with live_client(BASE_URL) as client:
             resp = client.post(
                 f"/cases/{case_id}/diagnostics",
                 json={"primary_diagnostic_media_reference": "legacy-block-a-style-reference"},
+            )
+            assert resp.status_code == 404, resp.text
+            assert resp.json()["error_category"] == "NOT_FOUND"
+            resp = client.post(
+                f"/cases/{case_id}/diagnostics",
+                json={"primary_diagnostic_media_reference": upload_media(client)},
             )
         assert resp.status_code in (200, 201), resp.text
