@@ -8,9 +8,9 @@ ni une durée de conservation, ni des droits d'usage de fournisseurs (§10).
 
 | Composant | Révision | Remarque |
 |---|---|---|
-| PI (`cpl-product-integration`) | branche `pi-preparation-production` (révision installée relevée dans `$PREFIX/COMPOSITION.installee`) | seule couche de composition |
+| PI (`cpl-product-integration`) | branche `pi-3a-persistance-securite` (depuis `pi-parcours-photo` @ `2036724`, qui contient `pi-preparation-production` @ `434d6c2` ; révision installée relevée dans `$PREFIX/COMPOSITION.installee`) | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
-| PGDR | `7302c6299f6e132bd90557126411a2170ef7452d` (`v1-propositions-photo`, depuis `v1-premier-constat` @ `7b863c0`) | écran des images proposées et son tri (faux transport seul) |
+| PGDR | `48d5da41db1066a57b7cb223ad00efd9cd03461e` (`v1-3a-securite`, depuis `v1-propositions-photo` @ `7302c62`) | images proposées (faux tri en essai signalé seulement), applicabilité sur critères réels, jeton CSRF de la page, journaux par gabarit |
 | CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
@@ -37,16 +37,23 @@ Internet ──HTTPS──▶ PI public (uvicorn, 1 processus) : /  frontend con
   n'écouter qu'en local (`listen_addresses = 'localhost'`, `pg_hba.conf` limité au rôle du
   service) — configuration du serveur PostgreSQL, à faire par l'exploitant.
 - Le navigateur ne détient aucun secret : session dans un cookie `pi_session` HttpOnly,
-  Secure, SameSite=Strict ; jeton CSRF dérivé de la session pour les requêtes d'écriture.
+  Secure, SameSite=Strict ; jeton CSRF dérivé de la session pour les requêtes d'écriture,
+  y compris celles de la page des voyants (PI place le jeton dans la page relayée ; chaque
+  écriture relayée exige ce jeton, l'origine exacte du produit et un corps JSON).
   Les jetons entre services (PI→VIR, PI→PGDR) restent côté serveur.
 - **Un seul processus PI** (`--workers 1`) : les diagnostics PGDR en cours vivent en mémoire.
 - Parcours des voyants (PGDR /v1) : ouvert depuis un dossier par son propriétaire
   (`POST /api/cases/{id}/notice-parcours`), puis servi par PI sous `/api/v1…` ; PI vérifie
   à chaque requête que le parcours appartient à l'utilisateur connecté et ne relaie que les
-  requêtes de la page (liste fermée). Le registre des parcours est en mémoire, comme les
-  parcours de PGDR : perdu au redémarrage (l'utilisateur rouvre le parcours depuis le dossier).
+  requêtes de la page (liste fermée). Un parcours **confirmé** est conservé dans CPL avec le
+  dossier (sélection du conducteur, confirmation datée, notice et empreinte, Premier Constat,
+  provenance, limites ; ni photo, ni réponse du tri, ni catalogue) et reste consultable après
+  redémarrage tel qu'il a été confirmé (`GET /api/cases/{id}/notice-results`). Un parcours
+  inachevé est en mémoire, comme chez PGDR : perdu au redémarrage, jamais présenté comme
+  repris ; l'utilisateur en ouvre un nouveau depuis le dossier.
   L'API doit rester servie sous `/api` (la page de PGDR appelle `/api/v1/parcours/…`).
-  Détails : `docs/build/PI_PARCOURS_PHOTO_V1_COMPTE_RENDU_v0.md`.
+  Détails : `docs/build/PI_PARCOURS_PHOTO_V1_COMPTE_RENDU_v0.md`,
+  `docs/build/PI_BLOC_3A_COMPTE_RENDU_v0.md`.
 
 ## 3. Installation
 
@@ -77,6 +84,10 @@ fichier `root:cpl-produit` 0640 hors dépôt, ex. `/etc/cpl-produit/montage.env`
 | `VIR_SERVICE_TOKEN` | jeton de service VIR (repris par PI comme `PI_VIR_SERVICE_TOKEN`) |
 | `VIR_DATA_ENCRYPTION_KEY` | clé de chiffrement du stockage VIR (perte = données VIR illisibles) |
 | `PGDR_IDENTITY_HANDOFF_TOKEN` | jeton du passage d'identité Photo-First PI→PGDR |
+| `PI_LOGIN_THROTTLE_SECRET` | secret HMAC des compteurs de connexion (32 caractères au moins) ; sans lui PI refuse de démarrer |
+| `PI_LOGIN_THROTTLE_SECRET_PREVIOUS` | ancien secret, pendant un renouvellement seulement (§5) |
+| `PI_PUBLIC_ORIGIN` | origine exacte du produit (`https://<domaine>[:port]`) exigée des écritures du parcours des voyants ; à défaut, schéma et hôte vus par PI |
+| `PI_TRUSTED_PROXIES` | seulement si un proxy TLS est placé devant PI : ses adresses ; absent, aucun en-tête `X-Forwarded-*` n'est cru |
 | `PI_PUBLIC_HOST`, `PI_PUBLIC_PORT` | adresse publique d'écoute |
 | `PI_TLS_CERT`, `PI_TLS_KEY` | certificat et clé TLS du domaine |
 | `MONTAGE_DIR` | dossier d'exécution et de journaux (sans `.env`) |
@@ -87,8 +98,10 @@ fichier `root:cpl-produit` 0640 hors dépôt, ex. `/etc/cpl-produit/montage.env`
 
 Notice des voyants (lus par PGDR, voir le README de PGDR) : `PGDR_V1_MANIFEST` (notice revue,
 hors dépôt) et ses fichiers facultatifs `PGDR_V1_*`. **`PGDR_V1_TRI` doit rester absent en
-production** : le seul transport de tri existant est un faux transport d'essai ; sans lui, la
-photo reste sur l'appareil et le catalogue complet est affiché avec son explication.
+production** : le seul transport de tri existant est un faux transport d'essai, que PGDR
+n'accepte que pour un essai signalé (`PGDR_V1_ESSAI_TRI=1`, bandeau permanent) et que
+`scripts/lancer_montage.sh` refuse en mode production (comme `PGDR_V1_DEV_TRIAL`) ; sans lui,
+la photo reste sur l'appareil et le catalogue complet est affiché avec son explication.
 
 Facultatifs : `PI_SESSION_IDLE_MINUTES` (30), `PI_SESSION_MAX_HOURS` (12),
 `VIR_PROVIDER_MODE` (`simulated` ; seul mode démontré). `PI_COOKIE_SECURE=0` est refusé en
@@ -114,15 +127,27 @@ Mot de passe : l'utilisateur le change lui-même (page « Change password » : m
 exigé). L'opérateur le réinitialise avec
 `reset-password --login <identifiant>` (saisie masquée deux fois, ou `--password-stdin`) ; la
 ligne d'audit (identifiant de compte seul, jamais le mot de passe ni l'identifiant de connexion)
-sort sur la sortie d'erreur. Dans les deux cas toutes les sessions du compte sont révoquées ; le
+sort sur la sortie d'erreur. Changements et réinitialisations, réussis ou refusés, laissent une
+ligne `audit date=… operation=… result=… actor=… target=…` (compte `account:<id>`, `operator`
+ou `-`) dans le journal du service (`pi05.log`) ou sur la sortie d'erreur de la commande ; jamais
+de mot de passe, jeton, cookie, identifiant de connexion ni adresse. Dans les deux cas toutes les sessions du compte sont révoquées ; le
 compte et le contact CPL gardent leurs identifiants, rien n'est désactivé ni recréé. Ne plus
 désactiver puis recréer un compte pour changer un mot de passe : cela crée un nouveau contact
 sans ses dossiers.
 
 Essais de mot de passe : 5 échecs par couple identifiant/origine, 50 par origine, 100 par
-identifiant toutes origines, sur 15 min, chacun bloquant 15 min. L'origine est l'adresse vue par
-PI-05 : derrière un proxy TLS, lancer uvicorn avec `--proxy-headers --forwarded-allow-ips=<proxy>`,
-sinon toutes les connexions partagent l'adresse du proxy.
+identifiant toutes origines, sur 15 min, chacun bloquant 15 min. Les compteurs ne gardent que
+des HMAC (secret `PI_LOGIN_THROTTLE_SECRET`), ni identifiant ni adresse. Renouvellement du
+secret : nouveau secret dans `PI_LOGIN_THROTTLE_SECRET`, ancien dans
+`PI_LOGIN_THROTTLE_SECRET_PREVIOUS` pendant au moins 30 minutes (les verrous en cours restent
+appliqués, aucun compte n'est bloqué par le renouvellement), puis retirer l'ancien ; ses
+compteurs cessent de compter et `purge-sessions` les supprime. L'origine est l'adresse vue par
+PI-05 : sans proxy, `scripts/lancer_montage.sh` lance PI avec `--no-proxy-headers` ; derrière un
+proxy TLS, définir `PI_TRUSTED_PROXIES` (le script passe `--proxy-headers
+--forwarded-allow-ips=<ces adresses>`), sinon toutes les connexions partagent l'adresse du proxy.
+**Risque résiduel, non accepté à ce jour par le propriétaire** : un essai réparti sur de
+nombreuses origines contre un même identifiant bloque ce compte 15 min pour toutes les origines,
+titulaire compris, après 100 échecs.
 
 ## 6. Lancement, santé, arrêt, redémarrage
 
@@ -131,6 +156,12 @@ deploy/migrer.sh upgrade                     # avant le premier lancement (§7)
 scripts/lancer_montage.sh                    # avec PI_FRONTEND_DIST : mode production
 curl -fsS https://<domaine>:<port>/health    # {"status":"ok"} ; 503 si la base est injoignable
 ```
+
+Journaux : PI et PGDR sont lancés sans journal d'accès d'uvicorn (`--no-access-log`) ; chaque
+requête laisse une ligne avec le gabarit de route (ex. `POST /api/v1/parcours/{pid}{sub_path:path} 200`)
+ou un libellé fixe, jamais le chemin réel, la requête, un en-tête ou un corps ; une exception
+laisse sa seule classe et une réponse 500 simple. Le journal d'accès de VIR (`vir.log`) n'a
+pas été modifié.
 
 Unité systemd modèle : `deploy/systemd/cpl-produit.service`
 (`systemctl start|stop|restart|status cpl-produit`). Le script arrête tout le montage si l'un
@@ -178,10 +209,10 @@ médias CPL/PI ne sont pas purgés : aucune règle n'est décidée.
   réelle non démontrée, composant réel non autorisé. En production : tri absent, catalogue
   complet avec explication.
 - PGDR : sessions de diagnostic et parcours des voyants en mémoire, un seul processus, perdus
-  au redémarrage.
+  au redémarrage ; le résultat d'un parcours confirmé est conservé dans CPL.
 - VIR : mode `simulated` seul démontré ; aucun fournisseur réel consulté.
-- Verrouillage d'un compte 15 min après 5 échecs de connexion (aucune limitation par adresse :
-  un tiers peut bloquer temporairement un compte dont il connaît l'identifiant).
+- Limitation des essais par identifiant et origine, par origine et par identifiant (§5) ;
+  risque résiduel d'un essai réparti sur de nombreuses origines (§5), non accepté à ce jour.
 - Pays d'immatriculation : France seule (registre VIR actuel).
 - Dépendances verrouillées par version, sans empreintes de fichiers.
 - Partage d'un véhicule : seul le modèle CPL existant (relations contact–véhicule) le

@@ -42,7 +42,8 @@ TOKEN = "fictive-pgdr-handoff-" + uuid.uuid4().hex[:8]
 RESOLVED_VIN = "VF3XXXXXXXXXXXXXX"        # VIR simulated fixture: Peugeot 3008 II, resolved
 PROVISIONAL_VIN = "VF1XXXXXXXXXXXXXX"     # VIR simulated fixture: provisionally resolved
 PLATE = "FICTIVE-PLATE-91"
-UNKNOWN = {"detail": "Parcours inconnu ou expiré.", "error_category": "NOT_FOUND"}
+UNKNOWN = {"detail": "Parcours inconnu ou expiré. Rouvrez la notice depuis votre dossier : un nouveau parcours commencera.",
+           "error_category": "NOT_FOUND"}
 
 
 class RecordingASGITransport(httpx.ASGITransport):
@@ -165,9 +166,12 @@ async def open_parcours(client, case_id: str) -> dict:
 
 
 def page_client(client: httpx.AsyncClient) -> httpx.AsyncClient:
-    """What PGDR's page sends: the session cookie only, never PI's CSRF header."""
+    """What PGDR's page sends since bloc 3A: the session cookie, PI's CSRF token
+    (read from the <meta name="csrf-token"> PI puts in the page) and, being a
+    browser, the Origin of the product."""
     return httpx.AsyncClient(transport=client._transport, base_url="http://api.test",
-                             headers={"Cookie": client.headers["Cookie"]})
+                             headers={"Cookie": client.headers["Cookie"], CSRF_HEADER: client.headers[CSRF_HEADER],
+                                      "Origin": "http://api.test"})
 
 
 async def started(client, case_id: str) -> tuple[str, httpx.AsyncClient]:
@@ -401,9 +405,10 @@ async def test_unauthenticated_and_cross_site_requests_are_refused(app, pgdr, us
     r = await anonymous.post("/cases/" + str(uuid.uuid4()) + "/notice-parcours")
     assert r.status_code == 401
     # Opening needs PI's CSRF token like every product route.
-    no_csrf = page_client(user_a)
+    no_csrf = httpx.AsyncClient(transport=user_a._transport, base_url="http://api.test",
+                                headers={"Cookie": user_a.headers["Cookie"]})
     assert (await no_csrf.post(f"/cases/{uuid.uuid4()}/notice-parcours")).status_code == 403
-    # Relayed POSTs: JSON only, same-origin only.
+    # Relayed POSTs: PI's token and origin (tests/test_3a_csrf_relais.py), JSON only, same-origin only.
     sel = f"/v1/parcours/{pid}/selection"
     r = await page.post(sel, content=b"entry_ids=fn_red_fluid", headers={"Content-Type": "application/x-www-form-urlencoded"})
     assert r.status_code == 415
@@ -505,6 +510,7 @@ async def test_production_entry_serves_the_page_under_api_with_its_own_script_ha
         assert page.headers["x-frame-options"] == "DENY"
         pid = opened["page"].split("p=", 1)[1]
         assert (await api.get(f"/v1/parcours/{pid}/catalogue")).status_code == 403   # PGDR: consent first
+        api.headers["Origin"] = "https://app.test"   # the page's writes: PI's token and the product origin
         await api.post(f"/v1/parcours/{pid}/vir-seen", json={})
         await api.post(f"/v1/parcours/{pid}/consent", json={"accepted": True})
         r = await api.get(f"/v1/parcours/{pid}/catalogue")   # what the page calls: /api/v1/parcours/...

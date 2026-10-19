@@ -274,3 +274,40 @@ export interface NoticeParcoursResponse {
   page?: string | null
   message?: string | null
 }
+
+// GET /cases/{case_id}/notice-results (bloc 3A): the confirmed results of the notice parcours, kept in CPL and
+// read back exactly as confirmed (product_integration.pgdr.notice_results).
+export interface NoticeTextSegment {
+  text?: string
+  pictogram?: string
+}
+
+export interface NoticeResultSection {
+  entry_id: string
+  designation: string
+  page_reference?: string | null
+  meaning: NoticeTextSegment[]
+  instruction?: string | null
+}
+
+export interface NoticeResult {
+  record_id: string
+  recorded_at: string
+  notice: { document_id: string; title: string; edition: string; language?: string | null; content_sha256: string }
+  selection: { entry_ids: string[]; by: string }
+  confirmation: { explicit: boolean; confirmed_at: string }
+  sections: NoticeResultSection[]
+  premier_constat: {
+    presentation?: {
+      stops_confirmed?: { citation?: { text?: string } }[]
+      sources?: string[]
+      end?: string
+    }
+  }
+  limits: string[]
+}
+
+export interface NoticeResultsResponse {
+  case_id: string
+  results: NoticeResult[]
+}

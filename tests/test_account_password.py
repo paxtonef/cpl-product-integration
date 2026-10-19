@@ -225,15 +225,15 @@ class TestPasswordChange:
         def broken(session, account_id):
             raise RuntimeError("fictitious failure after the password update")
 
-        monkeypatch.setattr(accounts, "_revoke_all_sessions", broken)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False,
-                                                                   client=(_origin(), 40000)),
-                                     base_url="http://api.test", headers=dict(user.headers)) as client:
-            r = await _change(client, user.password, NEW_PASSWORD)
-        assert r.status_code == 500
-        assert _password_hash(account_id) == stored
-        assert _session_count(account_id) == 1
-        monkeypatch.undo()
+        with monkeypatch.context() as patched:   # only this patch is undone below (bloc 3A: env fixtures stay)
+            patched.setattr(accounts, "_revoke_all_sessions", broken)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False,
+                                                                       client=(_origin(), 40000)),
+                                         base_url="http://api.test", headers=dict(user.headers)) as client:
+                r = await _change(client, user.password, NEW_PASSWORD)
+            assert r.status_code == 500
+            assert _password_hash(account_id) == stored
+            assert _session_count(account_id) == 1
         assert (await user.get("/cases")).status_code == 200
         assert (await _login(app, user.login, NEW_PASSWORD)).status_code == 401
 
@@ -245,7 +245,7 @@ class TestPasswordChange:
         logged = "\n".join(record.getMessage() for record in caplog.records)
         for secret in (user.password, NEW_PASSWORD, "wrong-current-password", user.login):
             assert secret not in logged and secret not in bad.text and secret not in ok.text
-        assert "password changed" in logged
+        assert f"operation=password_change result=success actor=account:{user.identity['account_id']}" in logged
 
 
 # -- operator reset ------------------------------------------------------------------
@@ -284,7 +284,7 @@ class TestOperatorReset:
             assert (await again.get(f"/cases/{objects['case']['case_id']}")).status_code == 200
         assert _identity_rows(account_id) == before
         logged = "\n".join(record.getMessage() for record in caplog.records)
-        assert "password reset" in logged
+        assert f"operation=password_reset result=success actor=operator target=account:{account_id}" in logged
         assert NEW_PASSWORD not in logged and user.password not in logged and user.login not in logged
 
     def test_the_command_writes_its_audit_line_without_any_secret(self):
@@ -299,7 +299,7 @@ class TestOperatorReset:
                                "--password-stdin"], input=NEW_PASSWORD + "\n", capture_output=True, text=True,
                               env=dict(os.environ), timeout=120)
         assert done.returncode == 0, done.stderr
-        assert "password reset by the operator account_id=" in done.stderr
+        assert "operation=password_reset result=success actor=operator target=account:" in done.stderr
         for secret in (NEW_PASSWORD, password, login):
             assert secret not in done.stderr and secret not in done.stdout
 

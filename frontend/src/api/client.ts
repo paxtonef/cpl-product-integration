@@ -14,6 +14,7 @@ import type {
   DiagnosticResponse,
   ExecutionStatusResponse,
   NoticeParcoursResponse,
+  NoticeResultsResponse,
   RegisterVehicleRequest,
   RegisterVehicleResponse,
   SessionResponse,
@@ -110,6 +111,8 @@ export const apiClient = {
     request<ArtifactResponse>('GET', `/executions/${executionId}/artifact`),
   // PGDR's V1 notice parcours for this case (opened or PGDR's own refusal).
   openNoticeParcours: (caseId: string) => request<NoticeParcoursResponse>('POST', `/cases/${caseId}/notice-parcours`),
+  // Its confirmed results, kept in CPL (no PGDR call, no sorting).
+  getNoticeResults: (caseId: string) => request<NoticeResultsResponse>('GET', `/cases/${caseId}/notice-results`),
 }
 
 // A page served by the API itself (PGDR's notice parcours page). PGDR's page

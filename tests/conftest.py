@@ -92,6 +92,18 @@ def vir_service_env(monkeypatch) -> str:
     return token
 
 
+@pytest.fixture(autouse=True)
+def login_throttle_secret(monkeypatch) -> str:
+    """Bloc 3A: sign-in counters are HMAC-keyed with a run-time server secret
+    (product_integration.auth.accounts); a fictitious one, fresh per test."""
+    import secrets
+
+    value = "fictive-throttle-" + secrets.token_hex(24)
+    monkeypatch.setenv("PI_LOGIN_THROTTLE_SECRET", value)
+    monkeypatch.delenv("PI_LOGIN_THROTTLE_SECRET_PREVIOUS", raising=False)
+    return value
+
+
 @pytest.fixture
 def full_authority() -> AuthorityContext:
     """Every authority grant PI-01's own code paths require, spanning

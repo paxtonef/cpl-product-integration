@@ -10,19 +10,28 @@
 Under the public /api prefix these are exactly the paths PGDR's page uses
 (/api/v1/parcours/...), so the page runs unchanged on the product origin.
 
-The relayed requests come from PGDR's page, which does not send PI's CSRF
-header. They are protected instead by: the SameSite=Strict session cookie;
-JSON-only POST bodies (a cross-site form cannot send them without a CORS
-preflight PI never grants); Sec-Fetch-Site, when the browser sends it, must
-be same-origin; and the parcours id in the path, an unguessable PGDR
-identifier that is useless to anyone but its owner (checked on every
-request; anything else is answered like a missing parcours).
+The relayed writes carry PI's own CSRF token (bloc 3A): PI places the
+session's token in the page it relays (<meta name="csrf-token">), PGDR's page
+sends it as X-CSRF-Token (PGDR 48d5da4), and PI compares it with the
+session's own, as for every product route. On top of it, each relayed write
+needs: an Origin equal to the product's origin (PI_PUBLIC_ORIGIN, or the
+scheme and Host this server sees -- uvicorn rewrites the scheme from
+X-Forwarded-Proto only for the proxies given to --forwarded-allow-ips, and
+PI never reads X-Forwarded-Host), Sec-Fetch-Site same-origin when the
+browser sends it, and a JSON body. The parcours owner is checked on every
+request; anything else is answered like a missing parcours. The SameSite
+cookie and Sec-Fetch-Site are kept but never relied on alone. No service
+token ever reaches the browser.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
+import html as html_lib
+import json
+import os
 import re
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -30,18 +39,23 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.db.engine import session_scope
 from vir.domain.models import VehicleIdentityResolution as VIRVehicleIdentityResolution
 
-from product_integration.api.deps import SESSION_COOKIE, get_notice_registry, get_pgdr_http_client, get_principal
+from product_integration.api.deps import (
+    CSRF_HEADER, SESSION_COOKIE, get_notice_registry, get_pgdr_http_client, get_principal,
+)
 from product_integration.api.errors import ProductAPIError, ProductAPIErrorCategory
 from product_integration.api.routes import _find_vir_execution_and_artifact
 from product_integration.auth import accounts
 from product_integration.auth.accounts import Principal
 from product_integration.auth.ownership import owned_case
+from product_integration.pgdr import notice_results
 from product_integration.pgdr.errors import VIRPGDRHandoffError
 from product_integration.pgdr.handoff_mapper import map_resolution
+from product_integration.stderr_log import stderr_logger
 from product_integration.pgdr.notice_parcours import (
     MAX_RELAY_BODY, PGDR_REFUSALS, NoticeParcoursRegistry, ParcoursOwner, allowed, cleaned_propositions_body,
     handoff_headers, pgdr_base_url, valid_parcours_id,
@@ -51,8 +65,16 @@ router = APIRouter(dependencies=[Depends(get_principal)])
 relay_router = APIRouter()
 
 _NO_STORE = {"Cache-Control": "no-store"}
-_UNKNOWN = "Parcours inconnu ou expiré."  # PGDR's own answer for an unknown parcours
+# An unknown parcours, another user's, or one lost at a restart: one answer, which never offers to resume.
+_UNKNOWN = "Parcours inconnu ou expiré. Rouvrez la notice depuis votre dossier : un nouveau parcours commencera."
+_RESTITUTION_STEPS = ("/confirm", "/clarify", "/condition")  # PGDR answers them with the restitution
+logger = stderr_logger("product_integration.notice_parcours")
 _RELAYED_TYPES = ("application/json", "image/png", "image/jpeg")
+
+
+class NoticeResultsResponse(BaseModel):
+    case_id: UUID
+    results: list[dict]   # product_integration.pgdr.notice_results.build_record, plus record_id and recorded_at
 
 
 class NoticeParcoursResponse(BaseModel):
@@ -69,8 +91,10 @@ async def open_notice_parcours_route(
 ):
     with session_scope() as session:
         owned_case(session, principal, case_id)
-        _, artifact = _find_vir_execution_and_artifact(session, case_id)
+        execution, artifact = _find_vir_execution_and_artifact(session, case_id)
         payload = dict(artifact.payload)
+        vir = {"vir_execution_id": execution.execution_id, "vir_artifact_id": artifact.artifact_id,
+               "vir_resolution_id": payload.get("resolution_id")}
     try:
         identity = map_resolution(VIRVehicleIdentityResolution.model_validate(payload))
     except VIRPGDRHandoffError:
@@ -87,7 +111,7 @@ async def open_notice_parcours_route(
         raise ProductAPIError(ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "PGDR opened no notice parcours")
     status, pid = body.get("status"), body.get("parcours_id")
     if status == "opened" and isinstance(pid, str) and valid_parcours_id(pid):
-        registry.put(pid, ParcoursOwner(case_id=case_id, contact_id=principal.contact_id))
+        registry.put(pid, ParcoursOwner(case_id=case_id, contact_id=principal.contact_id, **vir))
         return NoticeParcoursResponse(status="opened", page=f"/v1?p={pid}")
     if status in PGDR_REFUSALS:
         return NoticeParcoursResponse(status=status, message=body.get("message"))
@@ -103,6 +127,36 @@ def _session(request: Request) -> Optional[Principal]:
     return accounts.resolve_session(request.cookies.get(SESSION_COOKIE))
 
 
+PUBLIC_ORIGIN_ENV = "PI_PUBLIC_ORIGIN"
+
+
+def product_origin(request: Request) -> str:
+    """PI_PUBLIC_ORIGIN when given, else the scheme and Host of the request as this server sees them."""
+    configured = os.environ.get(PUBLIC_ORIGIN_ENV, "").strip().rstrip("/")
+    return configured or f"{request.url.scheme}://{request.headers.get('host', '')}"
+
+
+def _write_refusal(request: Request, principal: Principal) -> Optional[JSONResponse]:
+    """Why a relayed write is refused, or None. Each condition is required; none is enough alone."""
+    if request.headers.get("origin") != product_origin(request):
+        return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
+    if request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
+        return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
+    if not accounts.csrf_matches(principal, request.headers.get(CSRF_HEADER)):
+        return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        return _refused(415, ProductAPIErrorCategory.INVALID_REQUEST, "Requête refusée.")
+    return None
+
+
+def _with_csrf_meta(page: str, principal: Principal) -> Optional[str]:
+    """The page with the session's CSRF token for its writes (PGDR reads <meta name="csrf-token">)."""
+    if "<head>" not in page:
+        return None
+    meta = f'<meta name="csrf-token" content="{html_lib.escape(principal.csrf_token, quote=True)}">'
+    return page.replace("<head>", "<head>\n" + meta, 1)
+
+
 def _page_csp(html: str) -> str:
     scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
     hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(s.encode("utf-8")).digest()).decode() + "'"
@@ -114,15 +168,16 @@ def _page_csp(html: str) -> str:
 
 @relay_router.get("/v1", include_in_schema=False)
 async def notice_page_route(request: Request, http: httpx.AsyncClient = Depends(get_pgdr_http_client)):
-    if _session(request) is None:
+    principal = _session(request)
+    if principal is None:
         return _refused(401, ProductAPIErrorCategory.AUTHENTICATION_REQUIRED, "Session expirée : reconnectez-vous.")
     try:
         response = await http.get(f"{pgdr_base_url()}/v1")
     except httpx.HTTPError:
         return _refused(502, ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "Service des notices indisponible.")
-    if response.status_code != 200:
+    html = _with_csrf_meta(response.text, principal) if response.status_code == 200 else None
+    if html is None:
         return _refused(502, ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "Service des notices indisponible.")
-    html = response.text
     return HTMLResponse(html, headers={**_NO_STORE, "Content-Security-Policy": _page_csp(html),
                                        "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
                                        "X-Content-Type-Options": "nosniff"})
@@ -151,10 +206,9 @@ async def notice_relay_route(
         return _refused(401, ProductAPIErrorCategory.AUTHENTICATION_REQUIRED, "Session expirée : reconnectez-vous.")
     method = request.method
     if method == "POST":
-        if request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
-            return _refused(403, ProductAPIErrorCategory.CSRF_REJECTED, "Requête refusée.")
-        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
-            return _refused(415, ProductAPIErrorCategory.INVALID_REQUEST, "Requête refusée.")
+        refusal = _write_refusal(request, principal)
+        if refusal is not None:
+            return refusal
     owner = registry.owner(pid) if valid_parcours_id(pid) else None
     if owner is None or owner.contact_id != principal.contact_id or not allowed(method, sub_path):
         return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
@@ -176,4 +230,39 @@ async def notice_relay_route(
     media = response.headers.get("content-type", "").split(";")[0].strip().lower()
     if media not in _RELAYED_TYPES:
         return _refused(502, ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "Service des notices indisponible.")
+    if response.status_code == 404:
+        return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
+    if method == "POST" and response.status_code == 200 and sub_path in _RESTITUTION_STEPS:
+        if sub_path == "/confirm":
+            registry.note_confirmation(pid, datetime.now(timezone.utc))
+        await _keep_result(pid, owner, principal, response.content, registry)
     return Response(content=response.content, status_code=response.status_code, media_type=media, headers=_NO_STORE)
+
+
+async def _keep_result(pid: str, owner: ParcoursOwner, principal: Principal, content: bytes,
+                       registry: NoticeParcoursRegistry) -> None:
+    """Keeps in CPL a restitution PGDR produced after an explicit confirmation. If CPL refuses, nothing is
+    written and the driver still gets the manufacturer's texts (never withheld for want of a record); one
+    fixed log line says so."""
+    try:
+        state = json.loads(content)
+    except ValueError:
+        return
+    record = notice_results.build_record(
+        pid=pid, case_id=owner.case_id, owner_contact_id=owner.contact_id, vir=owner.vir_reference(), state=state,
+        confirmed_at=registry.confirmation(pid) or datetime.now(timezone.utc))
+    if record is None:
+        return
+    try:
+        await run_in_threadpool(notice_results.persist, record, case_id=owner.case_id, contact_id=owner.contact_id,
+                                actor_reference=principal.actor_reference)
+    except Exception as exc:  # noqa: BLE001 -- the restitution is still shown; logged by class only
+        logger.error("notice parcours result not recorded (%s)", type(exc).__name__)
+
+
+@router.get("/cases/{case_id}/notice-results", response_model=NoticeResultsResponse)
+def notice_results_route(case_id: UUID, principal: Principal = Depends(get_principal)):
+    """The kept results of the case, as confirmed (CPL only: no PGDR, no sorting). Owner only."""
+    with session_scope() as session:
+        owned_case(session, principal, case_id)
+        return NoticeResultsResponse(case_id=case_id, results=notice_results.results(session, case_id))

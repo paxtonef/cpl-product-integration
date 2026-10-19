@@ -92,7 +92,7 @@ test('O1. photo, proposed images, own selection, notice and Premier Constat; ref
   await signIn(pageB, 'B')
   await pageB.goto(`/api/v1?p=${pid}`)
   await expect(pageB.locator('#screen-error')).toBeVisible()
-  await expect(pageB.locator('#error-text')).toHaveText('Parcours inconnu ou expiré.')
+  await expect(pageB.locator('#error-text')).toHaveText('Parcours inconnu ou expiré. Rouvrez la notice depuis votre dossier : un nouveau parcours commencera.')
   const assetUrl = await page.locator('article.restitution img').first().getAttribute('src')
   expect((await pageB.request.get(assetUrl as string)).status()).toBe(404)
   expect((await pageB.request.get(`/api/v1/parcours/${pid}/catalogue`)).status()).toBe(404)

@@ -25,7 +25,9 @@ unchanged and not rebuilt here. PI adds only what the product needs:
     with the explained catalogue. The photo is not stored by PI.
 
 Process-local, like PGDR's parcours themselves (PGDR keeps them in memory):
-both are lost on restart and the user opens a new parcours from the case.
+both are lost on restart and the user opens a new parcours from the case --
+explicitly, never presented as resumed. The confirmed result itself is kept
+in CPL (bloc 3A, product_integration.pgdr.notice_results).
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime
 from threading import Lock
 from typing import Optional
 from uuid import UUID
@@ -75,14 +78,26 @@ def valid_parcours_id(pid: str) -> bool:
 class ParcoursOwner:
     case_id: UUID
     contact_id: UUID
+    # The VIR resolution the parcours was opened on (kept with its result, bloc 3A).
+    vir_execution_id: Optional[UUID] = None
+    vir_artifact_id: Optional[UUID] = None
+    vir_resolution_id: Optional[str] = None
+
+    def vir_reference(self) -> dict:
+        return {"execution_id": str(self.vir_execution_id) if self.vir_execution_id else None,
+                "artifact_id": str(self.vir_artifact_id) if self.vir_artifact_id else None,
+                "resolution_id": self.vir_resolution_id}
 
 
 class NoticeParcoursRegistry:
-    """parcours_id -> (case, owner). Process-local, bounded like PGDR's own
-    parcours store; never persisted, never claims otherwise."""
+    """parcours_id -> (case, owner, date of the last explicit confirmation).
+    Process-local, bounded like PGDR's own parcours store: an unfinished
+    parcours is lost on restart and is never presented as resumed. A
+    CONFIRMED result is kept in CPL (product_integration.pgdr.notice_results)."""
 
     def __init__(self, limit: int = 1000) -> None:
         self._entries: "OrderedDict[str, ParcoursOwner]" = OrderedDict()
+        self._confirmed: dict[str, datetime] = {}
         self._limit = limit
         self._lock = Lock()
 
@@ -90,11 +105,21 @@ class NoticeParcoursRegistry:
         with self._lock:
             self._entries[pid] = owner
             while len(self._entries) > self._limit:
-                self._entries.popitem(last=False)
+                dropped, _ = self._entries.popitem(last=False)
+                self._confirmed.pop(dropped, None)
 
     def owner(self, pid: str) -> Optional[ParcoursOwner]:
         with self._lock:
             return self._entries.get(pid)
+
+    def note_confirmation(self, pid: str, when: datetime) -> None:
+        with self._lock:
+            if pid in self._entries:
+                self._confirmed[pid] = when
+
+    def confirmation(self, pid: str) -> Optional[datetime]:
+        with self._lock:
+            return self._confirmed.get(pid)
 
     def __len__(self) -> int:
         with self._lock:

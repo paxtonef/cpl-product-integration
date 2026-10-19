@@ -39,7 +39,7 @@ SESSION_COOKIE = "pi_session"
 CSRF_HEADER = "X-CSRF-Token"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-_END_USER_GRANTS = frozenset({
+END_USER_GRANTS = frozenset({
     Authority.READ_IDENTITY,
     AssetAuthority.CREATE_ASSET, AssetAuthority.MANAGE_RELATIONSHIP, AssetAuthority.CONSUME_IDENTITY_RESOLUTION,
     CaseAuthority.CREATE_CASE, CaseAuthority.TRANSITION_CASE_STATUS, CaseAuthority.READ_CASE,
@@ -58,7 +58,7 @@ def get_principal(request: Request) -> Principal:
 
 
 def get_authority(principal: Principal = Depends(get_principal)) -> AuthorityContext:
-    return AuthorityContext(granted=_END_USER_GRANTS, actor_reference=principal.actor_reference)
+    return AuthorityContext(granted=END_USER_GRANTS, actor_reference=principal.actor_reference)
 
 
 # The VIR base URL is a module-level, overridable value rather than a

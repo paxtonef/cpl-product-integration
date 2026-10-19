@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.db.engine import engine
 
+from product_integration.api.access_log import AccessLogMiddleware
 from product_integration.api.errors import ProductAPIError, product_api_error_handler
 from product_integration.api.auth_routes import router as auth_router
 from product_integration.api.routes import router
@@ -25,9 +26,13 @@ def health_route() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def create_app(*, public_docs: bool = True) -> FastAPI:
+def create_app(*, public_docs: bool = True, access_log: bool = True) -> FastAPI:
+    """`access_log`: one line per request with its route template (api.access_log); the production entry logs
+    at its own level instead."""
     docs = {} if public_docs else {"docs_url": None, "redoc_url": None, "openapi_url": None}
     app = FastAPI(title="CPL Product Integration API", version="0.1.0", **docs)
+    if access_log:
+        app.add_middleware(AccessLogMiddleware)
     app.add_api_route("/health", health_route, methods=["GET"])
     app.include_router(auth_router)
     app.include_router(router)

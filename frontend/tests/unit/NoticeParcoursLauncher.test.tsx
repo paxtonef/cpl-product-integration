@@ -39,3 +39,43 @@ describe('NoticeParcoursLauncher', () => {
     expect(go).not.toHaveBeenCalled()
   })
 })
+
+describe('NoticeParcoursLauncher — recorded results (bloc 3A)', () => {
+  const record = {
+    record_id: 'rec-1',
+    recorded_at: '2026-10-19T10:00:01+00:00',
+    case_id: 'case-1',
+    owner_contact_id: 'contact-1',
+    vir: { execution_id: 'e', artifact_id: 'a', resolution_id: 'r' },
+    notice: { document_id: 'DOC-1', title: 'FICTIVE OWNER HANDBOOK', edition: 'Fictive edition 1', language: 'en',
+      content_sha256: 'abcdef0123456789abcdef' },
+    selection: { entry_ids: ['fn_green_lamps'], by: 'driver' },
+    confirmation: { explicit: true, confirmed_at: '2026-10-19T10:00:00+00:00' },
+    sections: [{ entry_id: 'fn_green_lamps', designation: 'FICTIVE LAMPS ON', page_reference: 'F-2',
+      meaning: [{ text: 'The fictive green light ' }, { pictogram: 'x' }, { text: 'shows the lamps.' }],
+      instruction: null }],
+    premier_constat: { presentation: { stops_confirmed: [], sources: ['Source : FICTIVE OWNER HANDBOOK'], end: 'Fin.' } },
+    provenance: { selection_origin: 'driver' },
+    limits: ["Sélection faite par le conducteur dans les images de la notice : ce n'est pas une reconnaissance du voyant."],
+  }
+
+  it('shows each kept result as it was confirmed, read from the case only', async () => {
+    vi.spyOn(apiClient, 'getNoticeResults').mockResolvedValue({ case_id: 'case-1', results: [record] })
+    vi.spyOn(apiClient, 'openNoticeParcours')
+    render(<NoticeParcoursLauncher caseId="case-1" go={vi.fn()} />)
+    const kept = await screen.findByTestId('notice-result-rec-1')
+    expect(kept).toHaveTextContent('FICTIVE OWNER HANDBOOK — Fictive edition 1')
+    expect(kept).toHaveTextContent('Your selection, not a recognition: FICTIVE LAMPS ON')
+    expect(kept).toHaveTextContent('The fictive green light shows the lamps.')
+    expect(kept).toHaveTextContent("ce n'est pas une reconnaissance du voyant")
+    expect(apiClient.getNoticeResults).toHaveBeenCalledWith('case-1')
+    expect(apiClient.openNoticeParcours).not.toHaveBeenCalled()
+  })
+
+  it('says that opening the notice starts a new parcours, never a resumed one', async () => {
+    vi.spyOn(apiClient, 'getNoticeResults').mockResolvedValue({ case_id: 'case-1', results: [] })
+    render(<NoticeParcoursLauncher caseId="case-1" go={vi.fn()} />)
+    expect(await screen.findByText(/starts a new parcours/)).toBeVisible()
+    expect(screen.queryByText(/resum/i)).toBeNull()
+  })
+})

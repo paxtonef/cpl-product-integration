@@ -23,12 +23,26 @@ stopped after MAX_FAILED_ATTEMPTS on one login without locking that login
 from any other origin; an origin trying many logins is stopped after
 ORIGIN_MAX_FAILURES; guessing one login from many origins is stopped after
 ACCOUNT_MAX_FAILURES. Every lock is temporary (LOCKOUT).
+
+The digests are HMAC-SHA256 with a server secret given at run time
+(PI_LOGIN_THROTTLE_SECRET, at least 32 characters; never in the repository,
+never logged), so a copy of the table does not let anyone test candidate
+logins or addresses. Rotation: the new secret becomes PI_LOGIN_THROTTLE_SECRET
+and the former one PI_LOGIN_THROTTLE_SECRET_PREVIOUS for at least
+FAILURE_WINDOW + LOCKOUT; locks under the former secret stay in force, counts
+are only ever written under the current one, and once the former secret is
+withdrawn its counters no longer apply and are purged when their window and
+lock are over (purge_expired_sessions). A rotation never locks anyone; it
+can at most give one window of extra attempts across the switch.
+
+Residual risk, not accepted by anyone here: guessing one login from many
+origins (a distributed attack) still locks that login for every origin after
+ACCOUNT_MAX_FAILURES, its owner included, for LOCKOUT.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
-import logging
 import os
 import re
 import secrets
@@ -46,11 +60,10 @@ from app.cpl.identity.contacts import create_contact
 from app.cpl.identity.outcomes import OperationOutcome
 from app.db.engine import session_scope
 
+from product_integration import audit
 from product_integration.auth.passwords import (
     PasswordPolicyError, burn_verification, check_policy, hash_password, verify_password,
 )
-
-logger = logging.getLogger("product_integration.auth")
 
 AUTH_PROVIDER = "pi-local-password"
 _LOGIN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._@+-]{2,127}$")
@@ -69,6 +82,10 @@ _OPERATOR_AUTHORITY = AuthorityContext(
 
 class AccountError(Exception):
     pass
+
+
+class ThrottleSecretMissing(RuntimeError):
+    """PI_LOGIN_THROTTLE_SECRET absent or shorter than THROTTLE_SECRET_MIN_LENGTH."""
 
 
 class PasswordChangeRefused(Exception):
@@ -174,13 +191,31 @@ def set_account_status(login: str, status: str) -> None:
 
 # -- throttling --------------------------------------------------------------
 
-def _digest(kind: str, value: str) -> str:
-    return hashlib.sha256(f"pi-throttle-{kind}:{value}".encode("utf-8")).hexdigest()
+THROTTLE_SECRET_ENV = "PI_LOGIN_THROTTLE_SECRET"
+THROTTLE_PREVIOUS_SECRET_ENV = "PI_LOGIN_THROTTLE_SECRET_PREVIOUS"
+THROTTLE_SECRET_MIN_LENGTH = 32
 
 
-def _throttle_keys(login: str, origin: str) -> list[tuple[str, str, str, int]]:
-    """(scope, subject_hash, origin_hash, max failures) for one attempt."""
-    subject, place = _digest("login", login), _digest("origin", origin or "unknown")
+def throttle_secrets() -> list[bytes]:
+    """[current] or [current, former]. Raises ThrottleSecretMissing without a usable current secret."""
+    current = os.environ.get(THROTTLE_SECRET_ENV, "")
+    if len(current) < THROTTLE_SECRET_MIN_LENGTH:
+        raise ThrottleSecretMissing(f"{THROTTLE_SECRET_ENV} must be set (at least {THROTTLE_SECRET_MIN_LENGTH} characters)")
+    keys = [current.encode("utf-8")]
+    previous = os.environ.get(THROTTLE_PREVIOUS_SECRET_ENV, "")
+    if len(previous) >= THROTTLE_SECRET_MIN_LENGTH and previous != current:
+        keys.append(previous.encode("utf-8"))
+    return keys
+
+
+def _digest(kind: str, value: str, key: Optional[bytes] = None) -> str:
+    return hmac.new(key or throttle_secrets()[0], f"pi-throttle-{kind}:{value}".encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def _throttle_keys(login: str, origin: str, key: Optional[bytes] = None) -> list[tuple[str, str, str, int]]:
+    """(scope, subject_hash, origin_hash, max failures) for one attempt, under `key` (default: the current secret)."""
+    subject, place = _digest("login", login, key), _digest("origin", origin or "unknown", key)
     return [
         ("login_origin", subject, place, MAX_FAILED_ATTEMPTS),
         ("origin", "", place, ORIGIN_MAX_FAILURES),
@@ -188,14 +223,16 @@ def _throttle_keys(login: str, origin: str) -> list[tuple[str, str, str, int]]:
     ]
 
 
-def _throttled(session, keys, now: datetime) -> bool:
-    for scope, subject, place, _ in keys:
-        locked = session.execute(text(
-            "SELECT locked_until FROM pi_auth.login_throttle "
-            "WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
-        ), {"s": scope, "h": subject, "o": place}).scalar()
-        if locked is not None and locked > now:
-            return True
+def _throttled(session, login: str, origin: str, now: datetime) -> bool:
+    """A lock under the current secret or, during a rotation, under the former one."""
+    for key in throttle_secrets():
+        for scope, subject, place, _ in _throttle_keys(login, origin, key):
+            locked = session.execute(text(
+                "SELECT locked_until FROM pi_auth.login_throttle "
+                "WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
+            ), {"s": scope, "h": subject, "o": place}).scalar()
+            if locked is not None and locked > now:
+                return True
     return False
 
 
@@ -223,10 +260,11 @@ def _record_failure(session, keys, now: datetime) -> None:
 def _clear_failures(session, login: str, origin: str) -> None:
     """A success from an origin clears that origin's failures on this login
     only (never the origin-wide nor the login-wide counters)."""
-    scope, subject, place, _ = _throttle_keys(login, origin)[0]
-    session.execute(text(
-        "DELETE FROM pi_auth.login_throttle WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
-    ), {"s": scope, "h": subject, "o": place})
+    for key in throttle_secrets():
+        scope, subject, place, _ = _throttle_keys(login, origin, key)[0]
+        session.execute(text(
+            "DELETE FROM pi_auth.login_throttle WHERE scope = :s AND subject_hash = :h AND origin_hash = :o"
+        ), {"s": scope, "h": subject, "o": place})
 
 
 def authenticate(login: str, password: str, origin: str = "unknown") -> Optional[NewSession]:
@@ -235,6 +273,7 @@ def authenticate(login: str, password: str, origin: str = "unknown") -> Optional
     `origin` is the client address as seen by the server; only its digest
     is stored."""
     now = _now()
+    throttle_secrets()  # no attempt is examined without the throttling secret
     try:
         login = normalize_login(login)
     except AccountError:
@@ -245,7 +284,7 @@ def authenticate(login: str, password: str, origin: str = "unknown") -> Optional
         return None
     keys = _throttle_keys(login, origin)
     with session_scope() as session:
-        if _throttled(session, keys, now):
+        if _throttled(session, login, origin, now):
             burn_verification(password)
             session.commit()
             return None
@@ -299,6 +338,22 @@ def change_password(principal: Principal, current_password: str, new_password: s
     account revoked, all in one transaction. Only the PI credential changes.
     Raises PasswordChangeRefused or PasswordPolicyError; nothing is changed
     then. No password ever reaches a message or a log."""
+    ref = audit.account(principal.account_id)
+    try:
+        _change_password(principal, current_password, new_password, origin)
+    except PasswordChangeRefused:
+        audit.record("password_change", "refused", actor=ref, target=ref)
+        raise
+    except PasswordPolicyError:
+        audit.record("password_change", "refused_policy", actor=ref, target=ref)
+        raise
+    except Exception:
+        audit.record("password_change", "failure", actor=ref, target=ref)
+        raise
+    audit.record("password_change", "success", actor=ref, target=ref)
+
+
+def _change_password(principal: Principal, current_password: str, new_password: str, origin: str) -> None:
     now = _now()
     with session_scope() as session:
         row = session.execute(text(
@@ -308,7 +363,7 @@ def change_password(principal: Principal, current_password: str, new_password: s
             burn_verification(current_password)
             raise PasswordChangeRefused()
         keys = _throttle_keys(row.login, origin)
-        if _throttled(session, keys, now):
+        if _throttled(session, row.login, origin, now):
             burn_verification(current_password)
             session.commit()
             raise PasswordChangeRefused()
@@ -320,32 +375,44 @@ def change_password(principal: Principal, current_password: str, new_password: s
         if verify_password(new_password, row.password_hash):
             raise PasswordPolicyError("the new password must differ from the current one")
         _store_new_password(session, principal.account_id, hash_password(new_password))
-        revoked = _revoke_all_sessions(session, principal.account_id)
+        _revoke_all_sessions(session, principal.account_id)
         _clear_failures(session, row.login, origin)
         session.commit()
-    logger.info("password changed by its owner account_id=%s sessions_revoked=%d", principal.account_id, revoked)
 
 
 def reset_password(login: str, new_password: str) -> UUID:
     """Operator reset (server command, masked input): new password checked
     against the policy, stored, every session revoked and the login's
     throttling cleared, in one transaction. The CPL Account and Contact are
-    untouched. Returns the account id."""
-    login = normalize_login(login)
-    check_policy(new_password, login=login)
-    password_hash = hash_password(new_password)
-    with session_scope() as session:
-        account_id = session.execute(text(
-            "SELECT account_id FROM pi_auth.credentials WHERE login = :l FOR UPDATE"
-        ), {"l": login}).scalar()
-        if account_id is None:
-            raise AccountError("unknown login")
-        _store_new_password(session, account_id, password_hash)
-        revoked = _revoke_all_sessions(session, account_id)
-        session.execute(text("DELETE FROM pi_auth.login_throttle WHERE subject_hash = :h"),
-                        {"h": _digest("login", login)})
-        session.commit()
-    logger.info("password reset by the operator account_id=%s sessions_revoked=%d", account_id, revoked)
+    untouched. Returns the account id. Every outcome leaves an audit line
+    (product_integration.audit), with the account id only."""
+    target = audit.UNRESOLVED
+    try:
+        login = normalize_login(login)
+        with session_scope() as session:
+            account_id = session.execute(text(
+                "SELECT account_id FROM pi_auth.credentials WHERE login = :l FOR UPDATE"
+            ), {"l": login}).scalar()
+            if account_id is None:
+                raise AccountError("unknown login")
+            target = audit.account(account_id)
+            check_policy(new_password, login=login)
+            _store_new_password(session, account_id, hash_password(new_password))
+            _revoke_all_sessions(session, account_id)
+            for key in throttle_secrets():
+                session.execute(text("DELETE FROM pi_auth.login_throttle WHERE subject_hash = :h"),
+                                {"h": _digest("login", login, key)})
+            session.commit()
+    except AccountError:
+        audit.record("password_reset", "refused_unknown_login", actor=audit.OPERATOR, target=target)
+        raise
+    except PasswordPolicyError:
+        audit.record("password_reset", "refused_policy", actor=audit.OPERATOR, target=target)
+        raise
+    except Exception:
+        audit.record("password_reset", "failure", actor=audit.OPERATOR, target=target)
+        raise
+    audit.record("password_reset", "success", actor=audit.OPERATOR, target=target)
     return account_id
 
 
