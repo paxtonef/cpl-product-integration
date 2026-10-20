@@ -1,7 +1,9 @@
 # Liste de réception — blocs 1, 2 et 3
 
 Actualisée le 2026-10-19 (bloc 3B, puis conservation et purge : PI `pi-3b-conservation-purge`), sur la composition de `deploy/COMPOSITION.env` : PI
-`pi-3b-reception-livraison`, PGDR `1c5a5cc`, VIR `a4c0172`, CPL `bc09253`. Données et comptes
+`pi-3b-reception-livraison`, PGDR `1c5a5cc`, VIR `a4c0172`, CPL `bc09253`. Lignes 3.15e et 3.15k–3.15r
+actualisées le 2026-10-20 (conservation 1/3 à 3/3 et contrôle navigateur) : PI `pi-conservation-integration`,
+PGDR `55f76ae`, VIR `a4c0172`, CPL `ced7e4b` (migrations 030 et 031). Données et comptes
 fictifs, bases PostgreSQL temporaires (cluster dédié), réseau extérieur bloqué (garde des
 essais : toute connexion hors boucle locale refusée), aucun fournisseur réel, aucun tri réel.
 
@@ -75,10 +77,18 @@ compte rendu, §3.
 | 3.15b | Simulation sans politique : « rien ne serait supprimé » ; exécution refusée, rien écrit | réussi | T `test_conservation_purge.py` | [exécuté] |
 | 3.15c | Purge des identifiants échus : résolutions et `vehicle_details` vidées (copies multiples, anciennes versions), marquées « non conservées », provenance, liens, dossiers, Premiers Constats et droits intacts ; trace sans valeur ; 2ᵉ exécution sans effet | réussi | T `test_conservation_purge.py` | [exécuté] |
 | 3.15d | Erreur en cours de purge : lot annulé, arrêt propre, relance qui termine | réussi | T `test_conservation_purge.py` | [exécuté] |
-| 3.15e | Artefacts `vir_resolution` : plaque et VIN **restent** (invariants CPL) ; non servis par le produit ; comptés | constaté ; arrêt sur ce point | guide §9.3 ; T `test_conservation_purge.py` | [exécuté] [non vérifiable] (levée : décision et évolution de CPL) |
+| 3.15e | Artefacts `vir_resolution` : nouveaux enregistrés sans plaque ni VIN ; anciens expurgés à l'échéance par l'opération CPL REQ-B6-091 (trace sans valeur, intégrité « expurgé autorisé », artefact altéré refusé) | réussi (levée par CPL `253ff8f`) | guide §9.3 ; T `test_conservation_artefacts.py`, `test_conservation_integration.py` | [exécuté] |
 | 3.15f | Médias par âge ; référence « no longer kept » ; pixels non vérifiés | réussi (âge) | T `test_conservation_purge.py` ; unitaire `ErrorBanner` | [exécuté] [non vérifiable] (pixels) |
 | 3.15g | Journaux tournés échus supprimés, journaux actifs intacts | réussi | T `test_conservation_purge.py` | [exécuté] |
 | 3.15h | Sauvegardes : manifeste, 0700/0400, sans clé ; seules les sauvegardes échues reconnues supprimées, le reste intact | réussi | T `test_conservation_sauvegardes.py` | [exécuté] |
 | 3.15i | Restauration ancienne : verrou, démarrage refusé sans purge, sessions révoquées, identifiants échus vidés avant réouverture | réussi | T `test_conservation_sauvegardes.py` | [exécuté] |
 | 3.15j | Navigateur : dossier après purge et après restauration (identification « no longer kept », résultats confirmés intacts, session antérieure refusée) | réussi | T `test_conservation_navigateur.py` | [exécuté] |
+| 3.15k | Suppression d'un dossier échu et de ses données propres (opération CPL REQ-B5-116) ; compte, véhicule, autres dossiers, connaissances conservés ; dossier dans sa période inchangé ; reprise après erreur ; 2ᵉ exécution sans effet | réussi | T `test_conservation_dossiers.py` ; CPL `test_b5_case_deletion.py` | [exécuté] |
+| 3.15l | Relais des parcours : dossier supprimé refusé aussitôt, PGDR non appelé, rien enregistré ; autre utilisateur refusé | réussi | T `test_conservation_dossiers.py` | [exécuté] |
+| 3.15m | Purge intégrée : une simulation pour toutes les catégories ; ordre expurgation → dossiers → identifiants → médias → journaux ; refus sans politique | réussi | T `test_conservation_integration.py`, `test_conservation_purge.py` | [exécuté] |
+| 3.15n | Sauvegarde prise après purge sans valeurs retirées ni dossier supprimé ; ancienne sauvegarde gardée jusqu'à son échéance | réussi | T `test_conservation_integration.py` | [exécuté] |
+| 3.15o | Restauration d'une sauvegarde en 030 : verrou jusqu'aux migrations (031) et à la conservation ; sessions révoquées même sans politique ; sans politique, verrou et message | réussi | T `test_conservation_integration.py` | [exécuté] |
+| 3.15p | Copies mises de côté : médias 0700 ; copie VIR reconnue par manifeste PI et nettoyée ; copie sans manifeste ou altérée signalée, jamais supprimée ; aucune copie PostgreSQL | réussi | T `test_conservation_integration.py` ; guide §9.5 | [exécuté] |
+| 3.15q | Effacement physique (WAL, `VACUUM`, supports de l'hébergeur, anciennes sauvegardes) | non garanti, documenté | guide §9.6 | [non vérifiable] |
+| 3.15r | Navigateur, montage réel : dossier conservé visible de son propriétaire avec son résultat ; dossier supprimé introuvable ; autre utilisateur refusé ; idem après restauration d'une sauvegarde ancienne puis purge | réussi | T `test_conservation_navigateur_dossiers.py` | [exécuté] |
 | 3.16 | Durées de conservation (et point de départ des identifiants), activation réelle (fournisseurs, tri) | décisions du propriétaire, non prises | guide §9, §11 | [non vérifiable] |
