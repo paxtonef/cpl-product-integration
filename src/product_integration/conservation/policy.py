@@ -14,8 +14,10 @@ Starting points (one implemented per category, named here):
                 writes a new record, which starts its own period. Other
                 candidates (last driver confirmation of the case, last
                 consultation) are not implemented: the choice is the owner's.
-  cases         when the case was created (no deletion mechanism exists, see
-                purge.py: only ``illimitee`` can be executed).
+  cases         ``creation_dossier``: when the case was created in CPL
+                (cases.created_at). A due case is deleted with the data that
+                exists only because of it, by CPL's governed operation
+                (REQ-B5-116, see purge.py); the deletion is irreversible.
   media         ``envoi``: when the medium was uploaded (media_ownership).
   logs          last modification of a rotated log file.
   backups       creation date written in the backup's manifest.
@@ -40,7 +42,7 @@ class Category:
 IDENTIFIERS = Category("identifiants", "PI_CONSERVATION_IDENTIFIANTS_JOURS",
                        "plaque et VIN et leurs copies dans CPL", "enregistrement_cpl")
 CASES = Category("dossiers", "PI_CONSERVATION_DOSSIERS_JOURS",
-                 "dossiers et résultats", "creation_dossier")
+                 "dossiers et leurs données propres (dont résultats confirmés)", "creation_dossier")
 MEDIA = Category("medias", "PI_CONSERVATION_MEDIAS_JOURS", "médias envoyés", "envoi")
 LOGS = Category("journaux", "PI_CONSERVATION_JOURNAUX_JOURS",
                 "journaux tournés de MONTAGE_DIR", "derniere_modification_fichier")

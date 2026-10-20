@@ -108,8 +108,8 @@ def readiness(environ=None) -> tuple[bool, list[str]]:
         if not setting.defined:
             complete = False
     if policy[CASES.key].days is not None:
-        complete = False
-        lines.append(f"{CASES.env} : durée non applicable (aucune suppression de dossier dans CPL)")
+        lines.append(f"{CASES.env} : les dossiers échus sont supprimés avec leurs données propres, sans retour "
+                     f"possible (hors sauvegardes antérieures) ; voir le guide §9")
     if policy[IDENTIFIERS.key].days is not None:
         lines.append("limite : les artefacts vir_resolution enregistrés avant REQ-B6-091 gardent plaque et VIN "
                      "jusqu'à l'expurgation par la commande CPL (simulation par défaut) ; voir le guide §9.3")

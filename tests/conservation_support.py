@@ -17,7 +17,7 @@ from app.db.engine import SessionLocal
 TEST_DAYS = "30"                     # test value only, not a decided duration
 SCHEMAS = ("cpl", "automotive", "pi_auth")
 WATCHED_TABLES = ("cpl.asset_identity_resolutions", "automotive.vehicle_details", "cpl.runner_artifacts",
-                  "cpl.runner_executions", "cpl.cases", "pi_auth.media_ownership",
+                  "cpl.runner_executions", "cpl.cases", "cpl.case_deletions", "pi_auth.media_ownership",
                   "pi_auth.identifier_expunctions", "pi_auth.conservation_operations")
 
 
@@ -86,6 +86,17 @@ def backdate_case(case_id, days: int) -> None:
             "UPDATE automotive.vehicle_details SET updated_at = updated_at - make_interval(days => :d), "
             "created_at = created_at - make_interval(days => :d) "
             "WHERE asset_id = (SELECT asset_id FROM cpl.cases WHERE case_id = :c)"), {"d": days, "c": str(case_id)})
+        s.commit()
+
+
+def backdate_case_creation(case_id, days: int) -> None:
+    """Moves the case's creation (the starting point of PI_CONSERVATION_DOSSIERS_JOURS) and its identification
+    records `days` into the past."""
+    backdate_case(case_id, days)
+    with SessionLocal() as s:
+        s.execute(text("UPDATE cpl.cases SET created_at = created_at - make_interval(days => :d), "
+                       "opened_at = opened_at - make_interval(days => :d) WHERE case_id = :c"),
+                  {"d": days, "c": str(case_id)})
         s.commit()
 
 

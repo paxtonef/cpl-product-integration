@@ -2,10 +2,9 @@
 
 Simulation reads only and works without any policy ("aucune politique, rien
 ne serait supprimé"). Execution refuses before any write unless every
-category it covers has an explicit policy (policy.py), and refuses a
-numeric period for cases and results: CPL provides no deletion of a case,
-its executions or its artifacts (append-only history, FK RESTRICT,
-REQ-B6-058), so only ``illimitee`` can be honoured for them.
+category it covers has an explicit policy (policy.py). For cases, a finite
+period deletes each due case through CPL's governed operation (REQ-B5-116,
+dossiers.py), one case per transaction; the deletion is irreversible.
 
 Execution works in batches, each in its own transaction, and records the
 operation in pi_auth.conservation_operations (policy, counts, outcome; never
@@ -28,7 +27,7 @@ from sqlalchemy import text
 
 from app.db.engine import session_scope
 
-from product_integration.conservation import identifiants, journaux, medias
+from product_integration.conservation import dossiers, identifiants, journaux, medias
 from product_integration.conservation.policy import (
     CASES, IDENTIFIERS, LOGS, MEDIA, PURGE_CATEGORIES, Setting, read_policy,
 )
@@ -82,9 +81,6 @@ def refusal_reasons(policy: dict[str, Setting]) -> list[str]:
     missing = [policy[c.key].category.env for c in PURGE_CATEGORIES if not policy[c.key].defined]
     if missing:
         reasons.append("politique non définie : " + ", ".join(missing))
-    if policy[CASES.key].days is not None:
-        reasons.append(f"{CASES.env} : aucune suppression de dossier n'existe (CPL conserve dossiers, exécutions et "
-                       f"artefacts) ; seule la valeur « illimitee » peut être appliquée")
     return reasons
 
 
@@ -109,10 +105,17 @@ def simulate(environ=None, now: Optional[datetime] = None) -> Report:
                 f"(antérieurs à REQ-B6-091 : expurgation par la commande CPL, sur décision de l'opérateur)"))
 
         s = policy[CASES.key]
-        detail = NO_POLICY if not s.defined else (
-            "rien ne serait supprimé" if s.unlimited else
-            "exécution refusée : aucune suppression de dossier n'existe dans CPL ; rien ne serait supprimé")
-        report.lines.append(Line(CASES.key, CASES.label, s.describe(), detail))
+        if not s.defined or s.unlimited:
+            total = session.execute(text("SELECT count(*) FROM cpl.cases")).scalar()
+            report.counts["cases_total"] = total
+            report.lines.append(Line(CASES.key, CASES.label, s.describe(),
+                                     (NO_POLICY if not s.defined else "rien ne serait supprimé")
+                                     + f" ({total} dossier(s) en base)"))
+        else:
+            p = dossiers.plan(session, _cutoff(s, now))
+            report.counts.update(cases=len(p.due), cases_blocked=len(p.blocked))
+            report.lines.append(Line(CASES.key, CASES.label, s.describe(), _cases_detail(
+                len(p.due), p.counts, len(p.blocked), conditional=True)))
 
         s = policy[MEDIA.key]
         media_dir = _media_dir(environ)
@@ -138,6 +141,15 @@ def simulate(environ=None, now: Optional[datetime] = None) -> Report:
             f"{len(due_logs)} journal(aux) tourné(s) seraient supprimés" if montage_dir
             else "MONTAGE_DIR absent : aucun journal examiné"))
     return report
+
+
+def _cases_detail(n: int, counts: dict, blocked: int, conditional: bool) -> str:
+    verb = "seraient supprimés" if conditional else "supprimé(s)"
+    return (f"{n} dossier(s) échu(s) {verb} avec leurs données propres "
+            f"({counts.get('runner_executions', 0)} exécution(s), {counts.get('runner_artifacts', 0)} artefact(s) "
+            f"dont résultats confirmés, {counts.get('asset_identity_resolutions', 0)} résolution(s) d'identité) ; "
+            f"comptes, véhicules, autres dossiers et connaissances conservés ; {blocked} dossier(s) échu(s) "
+            f"reporté(s) (une donnée hors du dossier en dépend)")
 
 
 def _start_operation(policy: dict[str, Setting], trigger: str) -> uuid.UUID:
@@ -175,7 +187,8 @@ def execute(environ=None, now: Optional[datetime] = None, trigger: str = "operat
         raise PurgeRefused("Exécution refusée, rien n'est supprimé : " + " ; ".join(reasons))
 
     operation_id = _start_operation(policy, trigger)
-    counts = {"resolutions": 0, "vehicle_details": 0, "artifacts_blocked": 0, "media": 0, "logs": 0}
+    counts = {"resolutions": 0, "vehicle_details": 0, "artifacts_blocked": 0, "cases": 0, "cases_blocked": 0,
+              "media": 0, "logs": 0}
     report = Report(executed=True, operation_id=operation_id, counts=counts)
     try:
         s = policy[IDENTIFIERS.key]
@@ -205,7 +218,26 @@ def execute(environ=None, now: Optional[datetime] = None, trigger: str = "operat
         else:
             report.lines.append(Line(IDENTIFIERS.key, IDENTIFIERS.label, s.describe(), "rien supprimé"))
 
-        report.lines.append(Line(CASES.key, CASES.label, policy[CASES.key].describe(), "rien supprimé"))
+        s = policy[CASES.key]
+        if s.days is not None:
+            cutoff = _cutoff(s, now)
+            with session_scope() as session:
+                due = list(dossiers.plan(session, cutoff).due)
+            deleted_rows: dict[str, int] = {}
+            for case_id in due:                      # one case per transaction
+                with session_scope() as session:
+                    outcome = dossiers.delete_one(session, case_id, cutoff, s.days, operation_id)
+                    session.commit()
+                counts["cases"] += int(outcome.deleted)
+                counts["cases_blocked"] += int(outcome.blocked)
+                for kind, n in outcome.counts.items():
+                    deleted_rows[kind] = deleted_rows.get(kind, 0) + n
+            with session_scope() as session:
+                counts["cases_blocked"] = len(dossiers.plan(session, cutoff).blocked)
+            report.lines.append(Line(CASES.key, CASES.label, s.describe(),
+                                     _cases_detail(counts["cases"], deleted_rows, counts["cases_blocked"], False)))
+        else:
+            report.lines.append(Line(CASES.key, CASES.label, s.describe(), "rien supprimé"))
 
         s = policy[MEDIA.key]
         if s.days is not None:

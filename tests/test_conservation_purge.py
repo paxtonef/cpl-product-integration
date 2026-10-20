@@ -80,7 +80,8 @@ async def test_readiness_reports_an_incomplete_production_configuration(monkeypa
     env = {**cs.policy_env(), "VIR_RETENTION_DAYS": "30", "MONTAGE_DIR": str(tmp_path)}
     complete, lines = readiness(env)
     assert complete and any("artefacts vir_resolution" in l for l in lines)       # the known limit is stated
-    assert not readiness({**env, "PI_CONSERVATION_DOSSIERS_JOURS": "30"})[0]     # not applicable to cases
+    complete, lines = readiness({**env, "PI_CONSERVATION_DOSSIERS_JOURS": "30"})      # executable since REQ-B5-116
+    assert complete and any("supprimés avec leurs données propres, sans retour" in l for l in lines)
     (tmp_path / "RESTAURATION_A_PURGER").write_text("x")
     assert not readiness(env)[0]
     r = cs.cli("controle", env={**os.environ, **{k: "" for k in cs.policy_env()}, "VIR_RETENTION_DAYS": ""})
@@ -98,8 +99,8 @@ async def test_without_policy_simulation_says_nothing_would_be_deleted_and_execu
     assert r.returncode == 0 and r.stdout.count(purge.NO_POLICY) == 4, r.stdout
     r = cs.cli("purge", "--executer", env=env)
     assert r.returncode == 2 and "Exécution refusée, rien n'est supprimé" in r.stderr
-    r = cs.cli("purge", "--executer", env=_env(PI_CONSERVATION_DOSSIERS_JOURS="30"))
-    assert r.returncode == 2 and "aucune suppression de dossier" in r.stderr
+    r = cs.cli("purge", "--executer", env=_env(PI_CONSERVATION_DOSSIERS_JOURS=None))
+    assert r.returncode == 2 and "PI_CONSERVATION_DOSSIERS_JOURS" in r.stderr
     r = cs.cli("purge", "--executer", env=_env(PI_CONSERVATION_MEDIAS_JOURS=None))
     assert r.returncode == 2 and "PI_CONSERVATION_MEDIAS_JOURS" in r.stderr
     assert cs.snapshot() == before                                     # nothing written, no operation recorded

@@ -14,7 +14,7 @@ fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Lis
 | PI (`cpl-product-integration`) | branche `pi-conservation-plaque` (depuis `pi-cloture-pgdr` @ `70a15b3`, depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
 | PGDR | `55f76ae4e1923a3d10110b0e7e140de25301cc72` (`v1-cloture`, depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | clôture V1 : parcours sans notice (textes retenus, consignes de sécurité) à côté de chaque refus, aucune saisie libre ; provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
-| CPL | `253ff8ffed67afcb48d2daf80863f9fb7f3c1999` (branche `cpl-conservation-plaque`, depuis `cpl-source-veracity-029` @ `bc09253`) | migration 030 (REQ-B6-091 : expurgation gouvernée de plaque et VIN des artefacts `vir_resolution`, schéma seul) |
+| CPL | `ced7e4b712e144f9fbff07fee17a6ae362ccc091` (branche `cpl-conservation-plaque`, depuis `cpl-source-veracity-029` @ `bc09253`) | migration 030 (REQ-B6-091 : expurgation gouvernée de plaque et VIN des artefacts `vir_resolution`, schéma seul) ; migration 031 (REQ-B5-116 : suppression gouvernée d'un dossier échu, table de trace seule) |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
 | Dépendances Python | `deploy/requirements.lock` (39 paquets, versions exactes) | sans empreintes : les roues diffèrent selon la plateforme |
@@ -235,13 +235,14 @@ parcours des voyants inachevé, et un résultat confirmé que CPL n'a pas enregi
 Toujours précédées d'une sauvegarde (§8).
 
 ```bash
-deploy/migrer.sh upgrade          # CPL jusqu'à 030 (head), puis schéma pi_auth
+deploy/migrer.sh upgrade          # CPL jusqu'à 031 (head), puis schéma pi_auth
 deploy/migrer.sh downgrade 028    # supprime pi_auth (comptes et sessions), puis CPL → 028
 ```
 
 La descente de 029 est documentée par CPL comme non totalement réversible (états
 `OWNER_ATTESTED_UNVERIFIED`). La descente de 030 est refusée dès qu'un artefact a été expurgé
-(son contenu d'origine n'existe plus). Base VIR existante : ordre de `docs/LIVRAISON_VIR_V1.md` §6
+(son contenu d'origine n'existe plus) ; celle de 031 dès qu'un dossier a été supprimé (suppression
+irréversible, sa trace doit rester). Base VIR existante : ordre de `docs/LIVRAISON_VIR_V1.md` §6
 (dépôt VIR) — `vir backup`, `vir migrate-owners`, `vir migrate-storage`, `vir check-storage`.
 Retour arrière du code : arrêter, réinstaller la composition précédente dans un PREFIX neuf
 (`deploy/installer.sh` depuis l'ancien commit PI), restaurer si besoin la sauvegarde prise
@@ -304,7 +305,7 @@ le stockage VIR et n'est jamais repris pour une autre catégorie.
 | Catégorie | Réglage | Unité | Point de départ (implémenté) | Mécanisme |
 |---|---|---|---|---|
 | Plaque et VIN et leurs copies dans CPL | `PI_CONSERVATION_IDENTIFIANTS_JOURS` | jours de 24 h (UTC) ou `illimitee` | `enregistrement_cpl` : date d'écriture dans CPL de l'enregistrement d'identification qui porte la copie | purge (§9.2) |
-| Dossiers et résultats (dont Premiers Constats) | `PI_CONSERVATION_DOSSIERS_JOURS` | idem | création du dossier | **aucune suppression possible** : CPL n'en prévoit aucune ; seule `illimitee` est exécutable, une durée est refusée |
+| Dossiers et leurs données propres (dont résultats confirmés et Premiers Constats) | `PI_CONSERVATION_DOSSIERS_JOURS` | idem | `creation_dossier` (date de création du dossier dans CPL) | purge (§9.4) : suppression **irréversible** du dossier échu et de ses données propres par l'opération CPL REQ-B5-116 |
 | Médias envoyés | `PI_CONSERVATION_MEDIAS_JOURS` | idem | `envoi` (date de l'envoi) | purge par âge ; fichiers supprimés, référence gardée « no longer kept » |
 | Journaux tournés | `PI_CONSERVATION_JOURNAUX_JOURS` | idem | dernière modification du fichier | suppression des seuls fichiers `pi05.log`, `pgdr.log`, `vir.log` suivis d'un suffixe de rotation (`.1`, `.2.gz`, `-AAAAMMJJ[.gz]`) ; les journaux actifs ne sont jamais touchés |
 | Sauvegardes et médias mis de côté | `PI_CONSERVATION_SAUVEGARDES_JOURS` | idem | date de création du manifeste | `deploy/nettoyer_sauvegardes.sh` (§8) |
@@ -348,7 +349,8 @@ exécution laisse une trace dans `pi_auth.conservation_operations` (politique, n
 chaque copie vidée une ligne dans `pi_auth.identifier_expunctions` (noms des champs, opération) —
 jamais une valeur. Sorties : catégories et nombres seulement.
 
-Consultation après purge : le dossier, son historique et ses résultats confirmés restent lisibles
+Consultation après purge des identifiants : le dossier, son historique et ses résultats confirmés
+(jusqu'à l'échéance du dossier lui-même, §9.4) restent lisibles
 par leur propriétaire (404 pour autrui) ; les détails d'identité répondent « plus conservés »
 (410 `VIR_RESULT_NOT_KEPT`, message du frontend « no longer kept »), même si VIR garde encore son
 résultat ; une confirmation ou clarification est refusée de même, rien n'est écrit. Un média purgé
@@ -358,8 +360,8 @@ sélection du conducteur ne sont pas modifiés.
 Médias : la purge par âge **ne garantit pas** l'absence de plaque ou de VIN dans les images encore
 conservées (contenu des pixels non vérifiable).
 
-Contrôle de préparation : signale toute catégorie non définie, une durée pour les dossiers,
-`VIR_RETENTION_DAYS` absent, un verrou de restauration, et rappelle la limite des artefacts. En mode
+Contrôle de préparation : signale toute catégorie non définie, rappelle qu'une durée pour les
+dossiers les supprime sans retour, `VIR_RETENTION_DAYS` absent, un verrou de restauration, et rappelle la limite des artefacts. En mode
 production, `scripts/lancer_montage.sh` l'exécute et affiche un avertissement si la configuration
 est incomplète (sans bloquer : les durées ne sont pas décidées).
 
@@ -395,6 +397,44 @@ autorisée. La purge PI compte les artefacts échus qui gardent encore plaque ou
 
 Toujours précédée d'une sauvegarde (§8). **Les sauvegardes antérieures gardent les valeurs** : leur
 sort suit `PI_CONSERVATION_SAUVEGARDES_JOURS`. Aucune expurgation de données réelles n'a été faite.
+
+### 9.4 Dossiers échus — suppression
+
+Réglage : `PI_CONSERVATION_DOSSIERS_JOURS` (aucune valeur par défaut). Non défini : la simulation
+donne le nombre de dossiers en base et « aucune politique, rien ne serait supprimé », l'exécution
+est refusée avant toute écriture. `illimitee` : rien n'est supprimé. Une durée : est échu un dossier
+créé avant « maintenant moins la durée » (`creation_dossier`, date de création dans CPL).
+
+Mêmes commandes (§9.2) : `deploy/purger.sh` simule (dossiers échus, exécutions, artefacts dont
+résultats confirmés, résolutions d'identité qui seraient supprimés ; dossiers reportés) ;
+`deploy/purger.sh --executer` supprime. PI n'écrit jamais dans CPL lui-même : il appelle
+l'opération CPL REQ-B5-116 (`app.cpl.cases.deletion`), **un dossier par transaction**.
+
+| Supprimé avec le dossier échu | Conservé |
+|---|---|
+| le dossier, ses participants, décisions et demandes de mutation | le compte, son contact, ses identifiants de connexion |
+| ses exécutions (VIR, parcours des voyants), leurs décisions et corrections | le véhicule (actif CPL, fiche véhicule, relation au propriétaire) ; la source de la fiche est remise à vide si elle désignait une résolution supprimée |
+| tous ses artefacts, toutes versions : résultats VIR, **résultats confirmés et Premiers Constats** (effet attendu) | les autres dossiers, y compris sur le même véhicule, et tout ce qu'ils ont enregistré |
+| les résolutions d'identité enregistrées par ses exécutions ; les traces PI qui les nommaient (`pi_auth.identifier_expunctions`) | les connaissances constructeur, notices et catalogues |
+| ses événements | les médias : aucune référence enregistrée ne les rattache à un dossier ; ils suivent `PI_CONSERVATION_MEDIAS_JOURS` |
+
+Un dossier dont dépend encore une donnée extérieure (résolution, exécution ou événement d'un autre
+dossier, identité courante du véhicule, projection ou décision d'identité) n'est pas supprimé :
+il est compté comme « reporté ». Un dossier encore dans sa période n'est jamais modifié. Après
+suppression, le dossier répond 404 à son propriétaire comme à tout autre utilisateur ; il n'existe
+aucun bouton de suppression dans l'interface.
+
+Trace : une ligne `cpl.case_deletions` par dossier (identifiant opaque, opération, motif
+`RETENTION_POLICY`, durée, référence opaque `pi-purge:<opération>`, date, nombres de lignes) et la
+ligne de `pi_auth.conservation_operations` — aucun contenu du dossier, aucun contact, aucun
+véhicule, aucune plaque ni VIN. Interruption : le dossier en cours est annulé en entier, les
+précédents restent supprimés, la relance reprend le reste ; une deuxième exécution ne refait rien.
+
+**Irréversible.** Aucune restauration depuis la base : seule une sauvegarde antérieure (§8) contient
+encore le dossier (sa durée propre s'applique). Une restauration suivie de `apres-restauration`
+supprime de nouveau les dossiers échus. La descente de la migration 031 est refusée après une
+suppression. **Aucune suppression de données réelles n'a été faite : la première exécution réelle
+est une étape de déploiement distincte**, après décision de la durée et sauvegarde.
 
 ## 10. Limites effectives
 
@@ -435,12 +475,12 @@ sort suit `PI_CONSERVATION_SAUVEGARDES_JOURS`. Aucune expurgation de données r�
 3. Gestionnaire de secrets (ou fichier protégé) pour les valeurs du §4.
 4. Décisions du propriétaire sur la conservation (§9) : durée VIR (`VIR_RETENTION_DAYS`, les
    30 jours par défaut **ne sont pas une durée approuvée**), plaque et VIN (et point de départ),
-   dossiers (illimitée ou évolution de CPL), médias, journaux, sauvegardes ; lancement de
+   dossiers (durée et date de la première suppression réelle, §9.4), médias, journaux, sauvegardes ; lancement de
    l'expurgation des artefacts `vir_resolution` enregistrés avant REQ-B6-091 (§9.3).
 5. Droits d'usage et contrats des fournisseurs VIR (RegCheck, Vincario) : **non acquis** ;
    tant qu'ils ne le sont pas, VIR reste en mode simulé ; aucune activation réelle autorisée.
 6. Décision de fusion des branches PI (`pi-3b-reception-livraison`), PGDR (`v1-3b-reception`)
-   et CPL (`cpl-conservation-plaque`) ; migration réelle de la base jusqu'à 030.
+   et CPL (`cpl-conservation-plaque`) ; migration réelle de la base jusqu'à 031.
 7. Analyse photo : nouveau mandat, qualification et autorisation distinctes (§10) ; de même
    pour tout composant réel de tri des images proposées (fournisseur, conservation, contrat,
    évaluation de la qualité sur notice réelle).
