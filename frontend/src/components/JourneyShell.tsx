@@ -3,6 +3,7 @@ import { Navigate } from 'react-router-dom'
 import { apiClient } from '../api/client'
 import { ApiError } from '../api/errors'
 import type { CaseHistoryResponse, CaseStatusResponse } from '../api/types'
+import { LEGACY_DIALOGUE } from '../state/legacyDialogue'
 import { decideScreen, type JourneyScreen } from '../state/navigation'
 import { ErrorBanner } from './ErrorBanner'
 
@@ -18,8 +19,9 @@ export interface CaseJourneyState {
 const SCREEN_PATH: Record<JourneyScreen, (caseId: string) => string> = {
   'case-hub': (id) => `/cases/${id}`,
   clarification: (id) => `/cases/${id}/clarification`,
-  refusal: (id) => `/cases/${id}/diagnostic`,
-  'diagnostic-question': (id) => `/cases/${id}/diagnostic`,
+  // The legacy dialogue's screens: its own route only when it is plugged in; otherwise the case page.
+  refusal: (id) => (LEGACY_DIALOGUE ? `/cases/${id}/diagnostic` : `/cases/${id}`),
+  'diagnostic-question': (id) => (LEGACY_DIALOGUE ? `/cases/${id}/diagnostic` : `/cases/${id}`),
   result: (id) => `/cases/${id}/result`,
   unknown: (id) => `/cases/${id}/history`,
 }

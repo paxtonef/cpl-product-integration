@@ -56,6 +56,20 @@ describe('NoticeParcoursLauncher', () => {
     expect(go).not.toHaveBeenCalled()
   })
 
+  it('offers the safety instructions of PGDR\'s parcours without notice beside its refusal (never a dead end)', async () => {
+    vi.spyOn(apiClient, 'openNoticeParcours').mockResolvedValue({
+      status: 'notice_unavailable', page: null, safety_page: '/v1?p=V1-safe',
+      message: 'Aucune notice constructeur n\'est disponible.',
+    })
+    const go = vi.fn()
+    render(<NoticeParcoursLauncher caseId="case-1" go={go} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open the manufacturer notice' }))
+    await screen.findByTestId('notice-refusal')
+    expect(go).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Voir les consignes de sécurité' }))
+    expect(go).toHaveBeenCalledWith('/api/v1?p=V1-safe')
+  })
+
   it('shows a technical failure without any detail', async () => {
     vi.spyOn(apiClient, 'openNoticeParcours').mockRejectedValue(
       new ApiError('PGDR_TECHNICAL_FAILURE', 'PGDR notice service unavailable', 502),

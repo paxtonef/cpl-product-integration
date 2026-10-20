@@ -11,7 +11,7 @@ function plain(segments: NoticeTextSegment[]): string {
 // PGDR's refusal as PGDR worded it (French): its reason, the identity keys compared with their provenance
 // (« confirmé par le conducteur » is never shown as established), what remains to be checked and the next
 // useful action. Nothing is assumed beyond it.
-function Refusal({ refusal }: { refusal: NoticeParcoursResponse }) {
+function Refusal({ refusal, go }: { refusal: NoticeParcoursResponse; go: (url: string) => void }) {
   const identity = refusal.identity ?? []
   const reasons = refusal.reasons ?? []
   const toVerify = refusal.to_verify ?? []
@@ -45,6 +45,12 @@ function Refusal({ refusal }: { refusal: NoticeParcoursResponse }) {
         </>
       )}
       {refusal.next_action && <p data-testid="notice-refusal-next">Prochaine étape : {refusal.next_action}</p>}
+      {refusal.safety_page && (
+        // PGDR's parcours without notice: a fixed screen, then the safety instructions by the colour of the light.
+        <button type="button" data-testid="notice-refusal-safety" onClick={() => go(apiPageUrl(refusal.safety_page!))}>
+          Voir les consignes de sécurité
+        </button>
+      )}
     </div>
   )
 }
@@ -143,7 +149,7 @@ export function NoticeParcoursLauncher({
         says. Images proposed from your photo are only an aid: you choose and confirm.
       </p>
       {error && <ErrorBanner error={error} />}
-      {refusal && <Refusal refusal={refusal} />}
+      {refusal && <Refusal refusal={refusal} go={go} />}
       <p>Opening the notice always starts a new parcours from the beginning.</p>
       <button type="button" onClick={open} disabled={status === 'opening'}>
         Open the manufacturer notice

@@ -11,9 +11,9 @@ fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Lis
 
 | Composant | Révision | Remarque |
 |---|---|---|
-| PI (`cpl-product-integration`) | branche `pi-fiat-provenance` (depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
+| PI (`cpl-product-integration`) | branche `pi-cloture-pgdr` (depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
-| PGDR | `79db82843f391e307bff782454dd08662c753713` (`v1-fiat-provenance`, depuis `v1-3b-reception` @ `1c5a5cc`, depuis `v1-3a-securite` @ `48d5da4`) | provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
+| PGDR | `9b8384586902d9befb3e65044d9a7f59aa9493aa` (`v1-cloture`, depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | clôture V1 : parcours sans notice (consignes de sécurité) à côté de chaque refus, aucune saisie libre ; provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
 | CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse ; schéma non modifié depuis |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
@@ -142,7 +142,13 @@ du propriétaire de la notice, hors dépôt, sont transmis tels quels à PGDR :
   ont changé.
 
 Un refus affiché dans le dossier donne le motif de PGDR, les clés comparées avec leur provenance, ce
-qui reste à vérifier et la prochaine étape.
+qui reste à vérifier et la prochaine étape, puis « Voir les consignes de sécurité » : le parcours sans notice
+de PGDR (écran fixe, puis l'écran de sécurité validé selon la couleur du voyant), jamais une impasse.
+
+Clôture PGDR V1 : le produit ne sert plus l'ancien diagnostic par dialogue (texte libre de la plainte,
+questions, rapport de préparation garagiste). Le point d'entrée de production ne l'inclut jamais ; une
+construction du frontend ne le relie que si `VITE_PI_DIALOGUE_HISTORIQUE=1` (essais seulement, avec
+`PI_DIALOGUE_HISTORIQUE=1` côté API de développement). Ne pas les définir en production.
 
 Facultatifs : `PI_SESSION_IDLE_MINUTES` (30), `PI_SESSION_MAX_HOURS` (12),
 `VIR_PROVIDER_MODE` (`simulated` ; seul mode démontré). `PI_COOKIE_SECURE=0` est refusé en

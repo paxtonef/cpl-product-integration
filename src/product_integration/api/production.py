@@ -87,6 +87,7 @@ def create_production_app(frontend_dist: Optional[str] = None) -> FastAPI:
     app.add_middleware(AccessLogMiddleware)   # inside the security headers: a 500 it writes gets them too
     app.add_middleware(_SecurityHeaders)
     app.add_api_route("/health", health_route, methods=["GET"])
-    app.mount("/api", create_app(public_docs=False, access_log=False))
+    # Never the legacy PGDR dialogue (complaint text, questions, garage report), whatever the environment says.
+    app.mount("/api", create_app(public_docs=False, access_log=False, legacy_dialogue=False))
     app.mount("/", _SinglePageApp(directory=str(dist), html=True), name="frontend")
     return app

@@ -9,6 +9,7 @@ import { History } from './routes/History'
 import { Login } from './routes/Login'
 import { Registration } from './routes/Registration'
 import { Result } from './routes/Result'
+import { LEGACY_DIALOGUE } from './state/legacyDialogue'
 
 export function App() {
   return (
@@ -21,7 +22,7 @@ export function App() {
           <Route path="/register" element={<Registration />} />
           <Route path="/cases/:caseId" element={<CaseHub />} />
           <Route path="/cases/:caseId/clarification" element={<Clarification />} />
-          <Route path="/cases/:caseId/diagnostic" element={<Diagnostic />} />
+          {LEGACY_DIALOGUE && <Route path="/cases/:caseId/diagnostic" element={<Diagnostic />} />}
           <Route path="/cases/:caseId/result" element={<Result />} />
           <Route path="/cases/:caseId/history" element={<History />} />
         </Route>

@@ -32,6 +32,7 @@ from product_integration.vir.client import SERVICE_TOKEN_HEADER, VIRClient
 
 from tests import vir_real_mode_support as support
 from tests.conftest import make_vin_request
+from tests.notice_parcours_support import notice_parcours_opened
 from tests.test_case_orchestration import full_authority  # noqa: F401  (the orchestration's authority)
 from tests.test_notice_parcours import (  # noqa: F401  (fixtures)
     make_app, open_parcours, pgdr, pgdr_calls, use_notice, user, vir_store,
@@ -110,7 +111,7 @@ async def test_confirmed_generation_crosses_the_chain_with_its_provenance_and_op
     assert after["confidence"]["score"] <= before["confidence"]["score"]           # never raised
 
     r = await open_parcours(client, case_id)
-    assert r["status"] == "applicability_not_confirmed" and r["page"] is None and v1._parcours == {}
+    assert r["status"] == "applicability_not_confirmed" and r["page"] is None and notice_parcours_opened() == []
     assert any("seule confirmation du conducteur" in x for x in r["reasons"])
     assert r["to_verify"] and "déjà validés" in r["next_action"]
     generation = {k["key"]: k for k in r["identity"]}["generation"]

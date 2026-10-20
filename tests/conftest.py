@@ -15,6 +15,10 @@ import os
 import uuid
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg2://pi01:pi01@localhost/pi01_test")
+# The legacy PGDR dialogue (complaint text, questions, garage report) is unplugged from the product since the
+# PGDR V1 closure; its own tests keep exercising it in an assembly that asks for it. The production entry never
+# serves it whatever this says (tests/test_cloture_pgdr_v1.py).
+os.environ.setdefault("PI_DIALOGUE_HISTORIQUE", "1")
 
 import httpx
 import pytest

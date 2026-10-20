@@ -91,3 +91,10 @@ def fake_sorter(ids=None, *, panne=False, raw=None, seen=None) -> vp.FauxTranspo
     else:
         answer = {"texte": raw if raw is not None else json.dumps({"proposed_entry_ids": ids})}
     return vp.FauxTransportTri(RECIPIENT, {}, answer, observer=None if seen is None else seen.append)
+
+
+def notice_parcours_opened() -> list[str]:
+    """PGDR's parcours opened WITH a notice. A refusal opens none: only, beside it, a parcours without notice
+    (fixed screen, then the safety instructions by colour; clôture PGDR V1)."""
+    from pgdr import v1_parcours as v1
+    return [pid for pid, p in v1._parcours.items() if p.sans_notice is None]

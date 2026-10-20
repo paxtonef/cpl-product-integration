@@ -95,6 +95,11 @@ from product_integration.api.schemas import (
 )
 
 router = APIRouter(dependencies=[Depends(get_principal)])
+# The legacy PGDR dialogue (PI-04: complaint text, SessionController questions, garage preparation report).
+# Unplugged from the product at the PGDR V1 closure (no dialogue with the driver): included only by an assembly
+# that asks for it (create_app(legacy_dialogue=True), or PI_DIALOGUE_HISTORIQUE=1 for tests and trials), never by
+# the production entry. Kept, not deleted.
+legacy_dialogue_router = APIRouter(dependencies=[Depends(get_principal)])
 
 
 # -- contacts (§8) -------------------------------------------------------
@@ -576,7 +581,7 @@ async def upload_media_route(
     return MediaUploadResponse(media_id=media_id)
 
 
-@router.post("/cases/{case_id}/diagnostics", response_model=DiagnosticResponse)
+@legacy_dialogue_router.post("/cases/{case_id}/diagnostics", response_model=DiagnosticResponse)
 async def start_diagnostic_route(
     case_id: UUID, body: StartDiagnosticRequest, response: Response, authority: AuthorityContext = Depends(get_authority),
     registry: PGDRSessionRegistry = Depends(get_pgdr_registry), principal: Principal = Depends(get_principal),
@@ -624,7 +629,7 @@ async def start_diagnostic_route(
     return _diagnostic_response(result, case_id)
 
 
-@router.post("/cases/{case_id}/diagnostics/{execution_id}/answers", response_model=DiagnosticResponse)
+@legacy_dialogue_router.post("/cases/{case_id}/diagnostics/{execution_id}/answers", response_model=DiagnosticResponse)
 async def submit_answer_route(
     case_id: UUID, execution_id: UUID, body: SubmitAnswerRequest, authority: AuthorityContext = Depends(get_authority),
     registry: PGDRSessionRegistry = Depends(get_pgdr_registry), principal: Principal = Depends(get_principal),

@@ -35,7 +35,8 @@ from product_integration.vir.client import VIRClient
 from tests import vir_real_mode_support as support
 from tests.auth_support import CSRF_HEADER, log_in, new_account
 from tests.notice_parcours_support import (
-    GREEN_MEANING, ORDER, RECIPIENT, SIMULATED_VEHICLE, build_notice, fake_sorter, photo_with_metadata,
+    GREEN_MEANING, ORDER, RECIPIENT, SIMULATED_VEHICLE, build_notice, fake_sorter, notice_parcours_opened,
+    photo_with_metadata,
 )
 
 TOKEN = "fictive-pgdr-handoff-" + uuid.uuid4().hex[:8]
@@ -319,7 +320,9 @@ async def test_g_provisional_identity_is_refused_and_no_notice_is_assumed(app, p
         "vehicle_identity_insufficient", None, "L'identité du véhicule n'est pas établie par VIR.")
     # Passe provenance: PGDR now also says which key is missing and the next useful action.
     assert any("n'est pas connu" in x for x in r["reasons"]) and r["next_action"]
-    assert v1._parcours == {} and len(app.state.notice_registry) == 0
+    # Clôture PGDR V1: no notice parcours; only the owner's parcours without notice, for the safety instructions.
+    assert notice_parcours_opened() == [] and len(app.state.notice_registry) == 1
+    assert r["safety_page"] == f"/v1?p={next(iter(v1._parcours))}"
 
 
 @pytest.mark.asyncio
@@ -332,7 +335,9 @@ async def test_g_notice_insufficient_is_refused(app, pgdr, user_a, setup, status
     setup(pgdr)
     r = await open_parcours(user_a, await case(user_a))
     assert r["status"] == status and r["page"] is None and r["message"]
-    assert v1._parcours == {} and len(app.state.notice_registry) == 0
+    # Clôture PGDR V1: no notice parcours; only the owner's parcours without notice, for the safety instructions.
+    assert notice_parcours_opened() == [] and len(app.state.notice_registry) == 1
+    assert r["safety_page"] == f"/v1?p={next(iter(v1._parcours))}"
 
 
 @pytest.mark.asyncio
@@ -365,7 +370,7 @@ async def test_g_a_driver_confirmed_value_is_never_promoted_to_a_decode(monkeypa
     assert sent["vehicle_identity"]["generation"] is None and "generation" in sent["unresolved_fields"]
     assert sent["field_provenance"]["generation"]["status"] == "user_confirmed"
     assert support.VIN.encode() not in handoff
-    assert v1._parcours == {}
+    assert notice_parcours_opened() == []
     await client.aclose()
 
 

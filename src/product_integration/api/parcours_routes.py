@@ -105,6 +105,9 @@ class NoticeParcoursResponse(BaseModel):
     to_verify: list[str] = Field(default_factory=list)
     next_action: Optional[str] = None
     identity: list[NoticeIdentityKey] = Field(default_factory=list)
+    # With a refusal: the page of PGDR's parcours WITHOUT notice (fixed screen, then the safety instructions by
+    # the colour of the light), so a refusal is never a dead end. Never a notice.
+    safety_page: Optional[str] = None
 
 
 _MAX_RELAYED_LINES, _MAX_LINE = 12, 600
@@ -114,7 +117,7 @@ def _lines(value) -> list[str]:
     return [x[:_MAX_LINE] for x in value[:_MAX_RELAYED_LINES] if isinstance(x, str)] if isinstance(value, list) else []
 
 
-def _refusal(status: str, body: dict) -> NoticeParcoursResponse:
+def _refusal(status: str, body: dict, safety_page: Optional[str] = None) -> NoticeParcoursResponse:
     identity = []
     for k in body.get("identity") or []:
         try:
@@ -124,7 +127,8 @@ def _refusal(status: str, body: dict) -> NoticeParcoursResponse:
     next_action = body.get("next_action")
     return NoticeParcoursResponse(status=status, message=body.get("message"), reasons=_lines(body.get("reasons")),
                                   to_verify=_lines(body.get("to_verify")), identity=identity[:_MAX_RELAYED_LINES],
-                                  next_action=next_action[:_MAX_LINE] if isinstance(next_action, str) else None)
+                                  next_action=next_action[:_MAX_LINE] if isinstance(next_action, str) else None,
+                                  safety_page=safety_page)
 
 
 @router.post("/cases/{case_id}/notice-parcours", response_model=NoticeParcoursResponse)
@@ -159,7 +163,12 @@ async def open_notice_parcours_route(
         registry.put(pid, ParcoursOwner(case_id=case_id, contact_id=principal.contact_id, **vir))
         return NoticeParcoursResponse(status="opened", page=f"/v1?p={pid}")
     if status in PGDR_REFUSALS:
-        return _refusal(status, body)
+        # PGDR opens, beside its refusal, a parcours without notice: the owner's only, like any parcours.
+        safety_page = None
+        if isinstance(pid, str) and valid_parcours_id(pid):
+            registry.put(pid, ParcoursOwner(case_id=case_id, contact_id=principal.contact_id, **vir))
+            safety_page = f"/v1?p={pid}"
+        return _refusal(status, body, safety_page)
     raise ProductAPIError(ProductAPIErrorCategory.PGDR_TECHNICAL_FAILURE, "PGDR opened no notice parcours")
 
 

@@ -287,6 +287,8 @@ export interface NoticeParcoursResponse {
   to_verify?: string[]
   next_action?: string | null
   identity?: NoticeIdentityKey[]
+  // With a refusal: PGDR's parcours without notice (fixed screen, then the safety instructions by colour).
+  safety_page?: string | null
 }
 
 // GET /cases/{case_id}/notice-results (bloc 3A): the confirmed results of the notice parcours, kept in CPL and
