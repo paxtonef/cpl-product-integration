@@ -100,7 +100,11 @@ cd "$MONTAGE_DIR"
 # sa fermeture TLS), au-delà du TimeoutStopSec=20 de l'unité ; chaque service s'arrête en 10 s au plus.
 graceful=(--timeout-graceful-shutdown 10)
 pids=()
-trap 'kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true' EXIT INT TERM
+stop_services() { kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
+# Arrêt demandé (systemctl stop, SIGTERM ou Ctrl-C) : services arrêtés, sortie 0 ; seul un service tombé de
+# lui-même termine le montage en échec (code 1, Restart=on-failure).
+trap 'trap - EXIT; stop_services; exit 0' INT TERM
+trap stop_services EXIT
 
 python -m uvicorn vir.api.routes:app --host 127.0.0.1 --port "$VIR_PORT" "${graceful[@]}" >> vir.log 2>&1 &
 pids+=($!)
