@@ -96,7 +96,12 @@ async def test_without_policy_simulation_says_nothing_would_be_deleted_and_execu
     before = cs.snapshot()
     env = {k: v for k, v in os.environ.items() if not k.startswith("PI_CONSERVATION_")}
     r = cs.cli("purge", env=env)
-    assert r.returncode == 0 and r.stdout.count(purge.NO_POLICY) == 4, r.stdout
+    # one simulation, every category: artifacts, identifiers, cases, media, logs, and the three kinds of
+    # backups and copies set aside (sessions have their own duration; no PostgreSQL copy is ever set aside)
+    assert r.returncode == 0 and r.stdout.count(purge.NO_POLICY) == 8, r.stdout
+    for key in ("- artefacts", "- identifiants", "- dossiers", "- medias", "- journaux", "- sessions",
+                "copie de la base VIR", "médias mis de côté", "base PostgreSQL avant restauration"):
+        assert key in r.stdout, key
     r = cs.cli("purge", "--executer", env=env)
     assert r.returncode == 2 and "Exécution refusée, rien n'est supprimé" in r.stderr
     r = cs.cli("purge", "--executer", env=_env(PI_CONSERVATION_DOSSIERS_JOURS=None))
@@ -168,7 +173,7 @@ async def test_purge_empties_due_identifiers_everywhere_allowed_and_keeps_cases_
     run1 = cs.cli("purge", "--executer", env=env)
     assert run1.returncode == 0, run1.stderr
     assert "5 résolution(s) d'identité et 2 fiche(s) véhicule vidées" in run1.stdout
-    assert "0 copie(s) échue(s) restante(s) hors artefacts" in run1.stdout
+    assert "0 copie(s) échue(s) restante(s), artefacts compris" in run1.stdout
     assert "1 média(s) supprimé(s)" in run1.stdout and "2 journal(aux) supprimé(s)" in run1.stdout
     for out in (run1.stdout, run1.stderr):
         assert vin not in out and plate not in out and "VF3XXXXXXXXXXXXXX" not in out
@@ -209,7 +214,7 @@ async def test_purge_empties_due_identifiers_everywhere_allowed_and_keeps_cases_
                                "WHERE o.started_at = (SELECT max(started_at) FROM pi_auth.conservation_operations)")).all()
     assert op.outcome == "completed" and op.trigger == "operator"
     assert op.counts["resolutions"] == 5 and op.counts["vehicle_details"] == 2 and op.counts["media"] == 1
-    assert op.counts["artifacts_blocked"] == 0 and op.policy["identifiants"]["days"] == 30
+    assert op.counts["artifacts"] == 0 and op.counts["artifacts_refused"] == 0 and op.policy["identifiants"]["days"] == 30
     assert sorted(m.target_kind for m in marks).count("asset_identity_resolution") == 5
 
     # reading after the purge: understandable, rights kept
@@ -282,7 +287,7 @@ async def test_an_error_during_the_purge_stops_cleanly_and_a_new_run_finishes(ap
                            "DROP FUNCTION IF EXISTS public.essai_conservation_refus();"))
             s.commit()
     r = cs.cli("purge", "--executer", "--lot", "1", env=_env())
-    assert r.returncode == 0 and "0 copie(s) échue(s) restante(s) hors artefacts" in r.stdout, r.stdout + r.stderr
+    assert r.returncode == 0 and "0 copie(s) échue(s) restante(s), artefacts compris" in r.stdout, r.stdout + r.stderr
     for c, vin, plate in cases:
         assert all(r.canonical_identity_payload["identifiers"].get("vin") is None for r in _case_ids(c)["resolutions"])
         assert _case_ids(c)["detail"].vin_display is None

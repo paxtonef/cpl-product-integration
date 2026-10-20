@@ -220,3 +220,34 @@ async def test_without_a_policy_for_cases_the_simulation_counts_and_the_executio
         assert r.returncode == 0 and _case_row(c) is not None                 # explicit "no limit": kept
     finally:
         cs.backdate_case_creation(c, -40)
+
+
+async def test_a_parcours_of_a_deleted_case_is_refused_at_once_without_reaching_pgdr(app, pgdr, user_a, user_b):
+    """1. The relay checks, on every call and before PGDR, that the case still exists and is the account's."""
+    from tests.test_notice_parcours import started
+    purge.execute(environ=_env())
+    old = await case(user_a)
+    pid, page = await started(user_a, old)
+    base = f"/v1/parcours/{pid}"
+    assert (await page.get(base + "/catalogue")).status_code == 200                # alive before the deletion
+    other = await case(user_b)
+    _, page_b = await started(user_b, other)
+    assert (await page_b.get(base + "/catalogue")).status_code == 404               # another user: refused, as before
+    cs.backdate_case_creation(old, 40)
+    run = cs.cli("purge", "--executer", env=_env())
+    assert run.returncode == 0 and _case_row(old) is None, run.stdout + run.stderr
+
+    calls = len(pgdr.transport.calls)
+    for method, path, body in (("GET", base, None), ("GET", base + "/catalogue", None),
+                               ("POST", base + "/selection", {"entry_ids": ["fn_green_lamps"]}),
+                               ("POST", base + "/confirm", {"entry_ids": ["fn_green_lamps"], "confirmed": True}),
+                               ("POST", base + "/record", {})):
+        r = await (page.get(path) if method == "GET" else page.post(path, json=body))
+        assert r.status_code == 404, (path, r.text)
+        assert set(r.json()) == {"detail", "error_category"} and "Parcours inconnu" in r.json()["detail"]
+    assert len(pgdr.transport.calls) == calls                                       # PGDR never reached
+    assert _case_row(old) is None and _count("SELECT count(*) FROM cpl.runner_executions WHERE case_id = :c",
+                                             c=old) == 0                            # nothing recorded
+    assert (await page_b.get(f"/v1/parcours/{pid}/catalogue")).status_code == 404
+    await page.aclose()
+    await page_b.aclose()

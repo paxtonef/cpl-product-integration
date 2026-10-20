@@ -2,8 +2,9 @@
 
 A. New writes: the artifact is registered without the plate and the VIN, everything else kept; the identity
    resolution and the vehicle detail keep them (their own conservation, unchanged); every reading works.
-B. Artifacts registered before: counted by the purge, expurgated only by CPL's operator command (simulation by
-   default), never by SQL from PI; after it, every reading still works and the integrity check says
+B. Artifacts registered before: due for the purge (which expurgates them through CPL's operation since
+   conservation 3/3, tests/test_conservation_integration.py) and expurgated by CPL's operator command (simulation
+   by default), never by SQL from PI; after it, every reading still works and the integrity check says
    "expurgated by the authorized operation".
 
 Real PI app, real VIR app (simulated fixture), real PGDR with a FICTIVE notice, temporary test database,
@@ -118,7 +119,7 @@ async def test_older_artifacts_are_expurgated_only_by_the_cpl_command(app, pgdr,
     cs.backdate_case(case_id, 40)
     try:
         with SessionLocal() as s:
-            assert identifiants.plan(s, identifiants_cutoff()).artifacts_blocked >= 1     # counted by the purge
+            assert old.artifact_id in identifiants.plan(s, identifiants_cutoff()).artifacts   # due for the purge
 
         # Simulation by default: nothing written, no value printed.
         sim = command("--motif", "RETENTION_POLICY", "--operateur", "op-cons-0001", "--artefact", str(old.artifact_id))
@@ -140,7 +141,7 @@ async def test_older_artifacts_are_expurgated_only_by_the_cpl_command(app, pgdr,
             trace = s.execute(text("SELECT original_content_hash, operator_reference, redacted_locations "
                                    "FROM cpl.runner_artifact_redactions WHERE artifact_id = :a"),
                               {"a": now.artifact_id}).one()
-            assert identifiants.plan(s, identifiants_cutoff()).artifacts_blocked == 0
+            assert identifiants.plan(s, identifiants_cutoff()).artifacts == []
         assert trace.original_content_hash == registered_hash and trace.operator_reference == "op-cons-0001"
         assert RESOLVED_VIN not in json.dumps(trace.redacted_locations)
         # The identity resolution and the vehicle detail are not this command's: untouched.

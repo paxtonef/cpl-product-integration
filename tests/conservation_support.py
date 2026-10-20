@@ -132,14 +132,19 @@ def register_handmade(case_id, asset_id, vin: str, plate: str, authority, driver
 
 
 def make_prefix(root: Path) -> Path:
-    """A $PREFIX for the delivery scripts whose venv/bin/python and vir run
-    this test environment (same interpreter, same PYTHONPATH)."""
+    """A $PREFIX for the delivery scripts whose venv/bin/python, vir and
+    alembic run this test environment (same interpreter, same PYTHONPATH),
+    with src/cpl pointing at the CPL tree under test."""
     bindir = root / "prefix" / "venv" / "bin"
     bindir.mkdir(parents=True)
     (bindir / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     (bindir / "vir").write_text(f'#!/bin/sh\nexec "{sys.executable}" -m vir.cli.main "$@"\n')
+    (bindir / "alembic").write_text(f'#!/bin/sh\nexec "{sys.executable}" -m alembic "$@"\n')
     for f in bindir.iterdir():
         f.chmod(0o755)
+    import app as cpl_app                      # CPL's tree, for deploy/migrer.sh ($PREFIX/src/cpl)
+    (root / "prefix" / "src").mkdir()
+    (root / "prefix" / "src" / "cpl").symlink_to(Path(cpl_app.__file__).resolve().parents[1])
     return root / "prefix"
 
 

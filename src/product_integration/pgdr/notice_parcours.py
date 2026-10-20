@@ -117,6 +117,13 @@ class NoticeParcoursRegistry:
         with self._lock:
             return self._entries.get(pid)
 
+    def forget(self, pid: str) -> None:
+        """Drops a parcours whose case no longer exists (deleted by the conservation purge)."""
+        with self._lock:
+            self._entries.pop(pid, None)
+            self._confirmed.pop(pid, None)
+            self._records.pop(pid, None)
+
     def note_confirmation(self, pid: str, when: datetime) -> None:
         with self._lock:
             if pid in self._entries:

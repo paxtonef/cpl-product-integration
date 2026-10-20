@@ -19,7 +19,10 @@ session's own, as for every product route. On top of it, each relayed write
 needs: an Origin equal to the product's origin (api.origin; required here,
 the page being a browser's only), Sec-Fetch-Site same-origin when the
 browser sends it, and a JSON body. The parcours owner is checked on every
-request; anything else is answered like a missing parcours. The SameSite
+request, and so is, in CPL and before PGDR is reached, that its case still
+exists and is still the signed-in account's: a case deleted by the
+conservation purge ends its parcours at once. Anything else is answered like
+a missing parcours. The SameSite
 cookie and Sec-Fetch-Site are kept but never relied on alone. No service
 token ever reaches the browser.
 """
@@ -40,6 +43,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from app.cpl.models.case import Case
 from app.db.engine import session_scope
 from vir.domain.models import VehicleIdentityResolution as VIRVehicleIdentityResolution
 
@@ -209,6 +213,24 @@ def _page_csp(html: str) -> str:
             "form-action 'none'; object-src 'none'")
 
 
+def _case_still_owned(owner: ParcoursOwner, principal: Principal) -> bool:
+    """Read on every relayed call, before PGDR is reached: the parcours' case still exists in CPL and the signed-in
+    account still owns it. A case deleted by the conservation purge ends its parcours at once, not at restart."""
+    with session_scope() as session:
+        case = session.get(Case, owner.case_id)
+        return case is not None and case.primary_contact_id == principal.contact_id
+
+
+async def _live_owner(pid: str, principal: Principal, registry: NoticeParcoursRegistry) -> Optional[ParcoursOwner]:
+    owner = registry.owner(pid) if valid_parcours_id(pid) else None
+    if owner is None or owner.contact_id != principal.contact_id:
+        return None
+    if not await run_in_threadpool(_case_still_owned, owner, principal):
+        registry.forget(pid)
+        return None
+    return owner
+
+
 @relay_router.get("/v1", include_in_schema=False)
 async def notice_page_route(request: Request, http: httpx.AsyncClient = Depends(get_pgdr_http_client)):
     principal = _session(request)
@@ -250,8 +272,8 @@ async def notice_record_retry_route(pid: str, request: Request,
     refusal = _write_refusal(request, principal)
     if refusal is not None:
         return refusal
-    owner = registry.owner(pid) if valid_parcours_id(pid) else None
-    if owner is None or owner.contact_id != principal.contact_id:
+    owner = await _live_owner(pid, principal, registry)
+    if owner is None:
         return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
     kept = registry.last_record(pid)
     if kept is None:
@@ -273,8 +295,10 @@ async def notice_relay_route(
         refusal = _write_refusal(request, principal)
         if refusal is not None:
             return refusal
-    owner = registry.owner(pid) if valid_parcours_id(pid) else None
-    if owner is None or owner.contact_id != principal.contact_id or not allowed(method, sub_path):
+    if not allowed(method, sub_path):
+        return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
+    owner = await _live_owner(pid, principal, registry)
+    if owner is None:
         return _refused(404, ProductAPIErrorCategory.NOT_FOUND, _UNKNOWN)
     content = None
     if method == "POST":

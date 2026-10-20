@@ -11,11 +11,16 @@ Where a plate or a VIN is kept in CPL (guide §9.1), and what is done here:
       emptied (null) once no identification record still within its period
       holds the same value; make, model, country and links stay.
   cpl.runner_artifacts (vir_resolution) payload
-      NOT emptied here. Since REQ-B6-091 a new artifact is registered without
-      the plate and the VIN; an artifact registered before keeps them until the
-      operator runs CPL's governed expurgation (app.cpl.runners.redaction_command,
-      simulation by default) -- never by SQL from PI. Those still holding one
-      are counted and reported (see the guide).
+      expurgated by CPL's governed operation (REQ-B6-091,
+      app.cpl.runners.redaction.redact_artifact_identifiers), called here --
+      never by SQL from PI. Since REQ-B6-091 a new artifact is registered
+      without the plate and the VIN; an artifact registered before keeps them
+      until its period is over. Same setting and same starting point
+      (``enregistrement_cpl``): the creation of the identification record its
+      execution wrote (the artifact's own registration when there is none,
+      both being written in the same transaction). Every version linked by
+      supersession is expurgated with it; an artifact whose content no longer
+      matches its hash is refused by CPL, counted, never modified.
 
 Each emptied record is written to pi_auth.identifier_expunctions with the
 operation that emptied it: the fields' names, never their values.
@@ -33,7 +38,10 @@ from sqlalchemy.orm import Session
 
 from app.automotive.models.vehicle_detail import VehicleDetail
 from app.cpl.models.asset_identity_resolution import AssetIdentityResolution
-from app.cpl.runners.redaction import holds_vehicle_identifier
+from app.cpl.identity.authority import AuthorityContext
+from app.cpl.runners.authority import RunnerAuthority
+from app.cpl.runners.outcomes import RunnerOutcome
+from app.cpl.runners.redaction import plan_redaction, redact_artifact_identifiers
 
 KEPT_IDENTIFIER_KEYS = ("registration_country",)    # not an identifier of the vehicle
 NOT_KEPT_MARKER = "identifiers_not_kept"
@@ -60,7 +68,8 @@ def holds_identifier(payload: Optional[dict]) -> bool:
 class IdentifierPlan:
     resolutions: list[UUID] = field(default_factory=list)
     vehicle_details: dict[UUID, list[str]] = field(default_factory=dict)   # asset_id -> columns to empty
-    artifacts_blocked: int = 0
+    artifacts: list[UUID] = field(default_factory=list)          # vir_resolution artifacts to expurgate
+    artifacts_refused: int = 0                                   # refused by CPL (content no longer matches its hash)
 
 
 def _due_resolutions(session: Session, cutoff: datetime) -> Iterable[AssetIdentityResolution]:
@@ -94,15 +103,19 @@ def _vehicle_detail_columns_due(session: Session, detail: VehicleDetail, cutoff:
     return due
 
 
-def _blocked_artifacts(session: Session, cutoff: datetime) -> int:
-    """vir_resolution artifacts of identifications past their period that
-    still hold a plate or a VIN (registered before REQ-B6-091 and not yet
-    expurgated by CPL's command)."""
-    rows = session.execute(text(
-        "SELECT DISTINCT a.artifact_id, a.payload FROM cpl.runner_artifacts a "
-        "JOIN cpl.asset_identity_resolutions r ON r.execution_id = a.execution_id "
-        "WHERE a.artifact_type = 'vir_resolution' AND r.created_at < :cutoff"), {"cutoff": cutoff})
-    return sum(1 for _, payload in rows if holds_vehicle_identifier(payload))
+def _due_artifact_ids(session: Session, cutoff: datetime) -> list[UUID]:
+    """vir_resolution artifacts whose identification record (or, without one,
+    whose own registration) is past its period. Reads ids only."""
+    return [row[0] for row in session.execute(text(
+        "SELECT a.artifact_id FROM cpl.runner_artifacts a WHERE a.artifact_type = 'vir_resolution' "
+        "AND a.schema_name = 'vir_resolution' AND coalesce((SELECT min(r.created_at) FROM "
+        "cpl.asset_identity_resolutions r WHERE r.execution_id = a.execution_id), a.created_at) < :cutoff"),
+        {"cutoff": cutoff})]
+
+
+def _artifact_plan(session: Session, cutoff: datetime):
+    ids = _due_artifact_ids(session, cutoff)
+    return plan_redaction(session, artifact_ids=ids) if ids else None
 
 
 def plan(session: Session, cutoff: datetime) -> IdentifierPlan:
@@ -112,8 +125,26 @@ def plan(session: Session, cutoff: datetime) -> IdentifierPlan:
         columns = _vehicle_detail_columns_due(session, detail, cutoff)
         if columns:
             result.vehicle_details[detail.asset_id] = columns
-    result.artifacts_blocked = _blocked_artifacts(session, cutoff)
+    artifacts = _artifact_plan(session, cutoff)
+    if artifacts is not None:
+        result.artifacts = list(dict.fromkeys(artifacts.to_redact))
+        result.artifacts_refused = len(artifacts.refused)
     return result
+
+
+def expurgate_artifact(session: Session, artifact_id: UUID, operation_id: UUID) -> int:
+    """CPL's governed expurgation of one artifact and its supersession chain,
+    in the caller's transaction. Returns how many artifacts were expurgated
+    (0: already done, or refused by CPL -- then nothing is written)."""
+    authority = AuthorityContext(granted=frozenset({RunnerAuthority.REDACT_ARTIFACT}),
+                                 actor_reference=f"pi-purge:{operation_id}")
+    result = redact_artifact_identifiers(session, artifact_id=artifact_id, reason="RETENTION_POLICY",
+                                         authority=authority, operation_id=operation_id)
+    if result.outcome == RunnerOutcome.SUCCESS:
+        return len(result.payload["redacted"])
+    if result.outcome in (RunnerOutcome.NO_CHANGE, RunnerOutcome.CONFLICT, RunnerOutcome.NOT_FOUND):
+        return 0
+    raise RuntimeError(f"artifact expurgation refused: {result.outcome}")
 
 
 def _record(session: Session, kind: str, target_id: UUID, fields: list[str], anchor_at, operation_id: UUID) -> None:
@@ -156,7 +187,7 @@ def empty_resolutions(session: Session, resolution_ids: list[UUID], operation_id
 
 def remaining(session: Session, cutoff: datetime) -> dict[str, int]:
     """After an execution: copies past their period still holding a value
-    (0 expected, artifacts excepted: see the module docstring)."""
+    (0 expected; artifacts refused by CPL for integrity counted apart)."""
     resolutions = sum(1 for r in session.query(AssetIdentityResolution).filter(AssetIdentityResolution.created_at < cutoff)
                       if holds_identifier(r.canonical_identity_payload))
     details = 0
@@ -164,7 +195,9 @@ def remaining(session: Session, cutoff: datetime) -> dict[str, int]:
             (VehicleDetail.vin_display.isnot(None)) | (VehicleDetail.registration_display.isnot(None))):
         if _vehicle_detail_columns_due(session, detail, cutoff):
             details += 1
-    return {"asset_identity_resolutions": resolutions, "vehicle_details": details}
+    artifacts = _artifact_plan(session, cutoff)
+    return {"asset_identity_resolutions": resolutions, "vehicle_details": details,
+            "vir_resolution_artifacts": len(artifacts.to_redact) if artifacts else 0}
 
 
 def identification_not_kept(session: Session, execution_id: UUID) -> bool:

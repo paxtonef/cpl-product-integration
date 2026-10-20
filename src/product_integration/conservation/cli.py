@@ -58,14 +58,20 @@ def _backups(args) -> int:
     root = Path(args.racine) if args.racine else (Path(os.environ["SAUVEGARDES_DIR"])
                                                   if os.environ.get("SAUVEGARDES_DIR") else None)
     media_dir = Path(os.environ["PI05_MEDIA_STORAGE_DIR"]) if os.environ.get("PI05_MEDIA_STORAGE_DIR") else None
-    if root is None and media_dir is None:
-        print("SAUVEGARDES_DIR (ou --racine) et PI05_MEDIA_STORAGE_DIR absents : rien à examiner", file=sys.stderr)
+    if root is None and media_dir is None and not os.environ.get("VIR_DATABASE_PATH"):
+        print("SAUVEGARDES_DIR (ou --racine), PI05_MEDIA_STORAGE_DIR et VIR_DATABASE_PATH absents : rien à examiner",
+              file=sys.stderr)
         return 2
-    found = sauvegardes.inventory(root, media_dir)
+    vir_db = Path(os.environ["VIR_DATABASE_PATH"]) if os.environ.get("VIR_DATABASE_PATH") else None
+    found = sauvegardes.inventory(root, media_dir, vir_db)
     recognised = [f for f in found if f.recognised]
     head = "Sauvegardes — exécution" if args.executer else "Sauvegardes — simulation (rien n'est modifié)"
     print(f"{head}\n- politique : {setting.describe()}\n- reconnues : {len(recognised)} ; "
           f"non reconnues (jamais supprimées) : {len(found) - len(recognised)}")
+    for kind, label in sauvegardes.KINDS.items():
+        items = [f for f in found if f.kind == kind]
+        print(f"  {label} : {sum(f.recognised for f in items)} reconnue(s), "
+              f"{sum(not f.recognised for f in items)} non reconnue(s)")
     for f in found:
         if not f.recognised:
             print(f"  non reconnue : {f.path.name} ({f.reason})")
@@ -111,8 +117,8 @@ def readiness(environ=None) -> tuple[bool, list[str]]:
         lines.append(f"{CASES.env} : les dossiers échus sont supprimés avec leurs données propres, sans retour "
                      f"possible (hors sauvegardes antérieures) ; voir le guide §9")
     if policy[IDENTIFIERS.key].days is not None:
-        lines.append("limite : les artefacts vir_resolution enregistrés avant REQ-B6-091 gardent plaque et VIN "
-                     "jusqu'à l'expurgation par la commande CPL (simulation par défaut) ; voir le guide §9.3")
+        lines.append("artefacts vir_resolution enregistrés avant REQ-B6-091 : plaque et VIN expurgés par la purge à "
+                     "l'échéance des identifiants (opération CPL) ; voir le guide §9.3")
     if not environ.get("VIR_RETENTION_DAYS", "").strip():
         complete = False
         lines.append("VIR_RETENTION_DAYS (stockage VIR, réglage propre à VIR) : non défini")
@@ -132,15 +138,19 @@ def _controle(_args) -> int:
 
 
 def _after_restore(args) -> int:
-    reasons = purge.refusal_reasons(read_policy())
-    if reasons:
-        print("Après restauration : purge refusée, rien n'est supprimé : " + " ; ".join(reasons)
-              + f". Le service reste fermé ({RESTORE_LOCK}).", file=sys.stderr)
-        return 2
+    """After deploy/restaurer.sh and the migrations: every restored web session is revoked first, whatever the
+    policy; then the purge runs in its documented order (artifacts, cases, identifiers, media, logs). Without an
+    explicit policy nothing is deleted and the lock stays: the service stays closed."""
     with session_scope() as session:
         revoked = session.execute(text("DELETE FROM pi_auth.web_sessions")).rowcount
         session.commit()
     print(f"Sessions web révoquées : {revoked}")
+    reasons = purge.refusal_reasons(read_policy())
+    if reasons:
+        print("Après restauration : purge refusée, rien n'est supprimé : " + " ; ".join(reasons)
+              + f". Le service reste fermé ({RESTORE_LOCK}) : définir la politique, puis relancer "
+                f"« apres-restauration ».", file=sys.stderr)
+        return 2
     try:
         report = purge.execute(trigger="after_restore", batch_size=args.lot)
     except purge.PurgeRefused as exc:
