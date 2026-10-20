@@ -152,11 +152,13 @@ def test_g_identity_not_established_gives_the_safety_instructions_without_notice
     page.get_by_role("button", name="Voir les consignes de sécurité").click()
     page.wait_for_url("**/api/v1?p=*")
     page.locator("#screen-sans-notice").wait_for()
-    assert page.locator("#sans-notice-message").inner_text() == "L'identité du véhicule n'est pas établie par VIR."
+    assert page.locator("#sans-notice-titre").inner_text() == "Notice indisponible pour ce véhicule"
+    assert "L'identité du véhicule" not in page.locator("#screen-sans-notice").inner_text()
     assert page.locator("img:visible, .tile").count() == 0
     no_free_text(page)
     page.get_by_role("button", name="Rouge").click()
     page.locator("#sans-notice-screen h2").filter(has_text="Arrêtez-vous en sécurité").wait_for()
+    assert "image de la notice" not in page.locator("#screen-sans-notice").inner_text()
     assert executions(case_id) == ["VIR"]                      # nothing recorded, no summary, no report
     context.close()
 
@@ -181,7 +183,7 @@ def test_g_no_notice_provided_at_all_gives_the_same_safety_instructions(browser,
         page.get_by_test_id("notice-refusal").wait_for()
         page.get_by_role("button", name="Voir les consignes de sécurité").click()
         page.locator("#screen-sans-notice").wait_for()
-        assert page.locator("#sans-notice-titre").inner_text() == "Aucune notice du constructeur pour ce véhicule"
+        assert page.locator("#sans-notice-titre").inner_text() == "Notice indisponible pour ce véhicule"
         no_free_text(page)
         page.get_by_role("button", name="Vert").click()
         page.locator("#sans-notice-screen h2").filter(has_text="Voyant non identifié").wait_for()

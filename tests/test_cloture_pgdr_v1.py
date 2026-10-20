@@ -59,12 +59,14 @@ async def test_refusal_leads_to_the_safety_instructions_of_the_owner_only(app, p
     assert html.status_code == 200 and 'id="screen-sans-notice"' in html.text
 
     state = (await page.get(f"/v1/parcours/{pid}")).json()
-    assert state["phase"] == "sans_notice" and state["sans_notice"]["message"] == r["message"]
+    assert state["phase"] == "sans_notice" and state["sans_notice"]["titre"] == "Notice indisponible pour ce véhicule"
+    assert "message" not in state["sans_notice"]   # same texts for every refusal; the refusal stays in the case
     for path in ("/catalogue", "/propositions"):
         assert (await page.get(f"/v1/parcours/{pid}{path}")).status_code == 409
     assert (await page.post(f"/v1/parcours/{pid}/consent", json={"accepted": True})).status_code == 409
     red = (await page.post(f"/v1/parcours/{pid}/colour", json={"colour": "rouge"})).json()["screen"]
     assert red["key"] == "red_or_uncertain" and red["heading"].startswith("Arrêtez-vous en sécurité")
+    assert "image de la notice" not in " ".join(red["paragraphs"]) and "voyant observé" in red["paragraphs"][1]
     other = (await page.post(f"/v1/parcours/{pid}/colour", json={"colour": "jaune"})).json()["screen"]
     assert other["key"] == "other_colour"
 

@@ -13,7 +13,7 @@ fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Lis
 |---|---|---|
 | PI (`cpl-product-integration`) | branche `pi-cloture-pgdr` (depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
-| PGDR | `9b8384586902d9befb3e65044d9a7f59aa9493aa` (`v1-cloture`, depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | clôture V1 : parcours sans notice (consignes de sécurité) à côté de chaque refus, aucune saisie libre ; provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
+| PGDR | `55f76ae4e1923a3d10110b0e7e140de25301cc72` (`v1-cloture`, depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | clôture V1 : parcours sans notice (textes retenus, consignes de sécurité) à côté de chaque refus, aucune saisie libre ; provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
 | CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse ; schéma non modifié depuis |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
