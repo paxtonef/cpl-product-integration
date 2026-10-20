@@ -11,11 +11,11 @@ Where a plate or a VIN is kept in CPL (guide §9.1), and what is done here:
       emptied (null) once no identification record still within its period
       holds the same value; make, model, country and links stay.
   cpl.runner_artifacts (vir_resolution) payload
-      NOT emptied: CPL keeps every artifact row in full (REQ-B6-058), corrects
-      content only by supersession, which keeps the old row (REQ-B6-057/059),
-      and flags any payload that no longer matches its content_hash without
-      ever correcting it (REQ-B6-053..055). Emptying would break those
-      invariants; only counted and reported (see the guide).
+      NOT emptied here. Since REQ-B6-091 a new artifact is registered without
+      the plate and the VIN; an artifact registered before keeps them until the
+      operator runs CPL's governed expurgation (app.cpl.runners.redaction_command,
+      simulation by default) -- never by SQL from PI. Those still holding one
+      are counted and reported (see the guide).
 
 Each emptied record is written to pi_auth.identifier_expunctions with the
 operation that emptied it: the fields' names, never their values.
@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.automotive.models.vehicle_detail import VehicleDetail
 from app.cpl.models.asset_identity_resolution import AssetIdentityResolution
+from app.cpl.runners.redaction import holds_vehicle_identifier
 
 KEPT_IDENTIFIER_KEYS = ("registration_country",)    # not an identifier of the vehicle
 NOT_KEPT_MARKER = "identifiers_not_kept"
@@ -94,10 +95,14 @@ def _vehicle_detail_columns_due(session: Session, detail: VehicleDetail, cutoff:
 
 
 def _blocked_artifacts(session: Session, cutoff: datetime) -> int:
-    return session.execute(text(
-        "SELECT count(DISTINCT a.artifact_id) FROM cpl.runner_artifacts a "
+    """vir_resolution artifacts of identifications past their period that
+    still hold a plate or a VIN (registered before REQ-B6-091 and not yet
+    expurgated by CPL's command)."""
+    rows = session.execute(text(
+        "SELECT DISTINCT a.artifact_id, a.payload FROM cpl.runner_artifacts a "
         "JOIN cpl.asset_identity_resolutions r ON r.execution_id = a.execution_id "
-        "WHERE a.artifact_type = 'vir_resolution' AND r.created_at < :cutoff"), {"cutoff": cutoff}).scalar()
+        "WHERE a.artifact_type = 'vir_resolution' AND r.created_at < :cutoff"), {"cutoff": cutoff})
+    return sum(1 for _, payload in rows if holds_vehicle_identifier(payload))
 
 
 def plan(session: Session, cutoff: datetime) -> IdentifierPlan:

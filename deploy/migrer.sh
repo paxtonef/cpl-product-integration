@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Migrations du montage (base PostgreSQL de CPL + schéma pi_auth de PI).
-#   deploy/migrer.sh upgrade            CPL jusqu'à head (029), puis pi_auth
+#   deploy/migrer.sh upgrade            CPL jusqu'à head (030), puis pi_auth
 #   deploy/migrer.sh downgrade <rev>    pi_auth supprimé (comptes et sessions perdus),
 #                                       puis CPL redescendu à <rev> (ex. 028)
 # Toujours précédé d'une sauvegarde (deploy/sauvegarder.sh). Variables : PREFIX, DATABASE_URL.

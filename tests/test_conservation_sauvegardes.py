@@ -174,7 +174,7 @@ async def test_an_old_backup_restored_is_purged_before_the_service_reopens(app, 
     source = next((tmp_path / "sauvegardes").iterdir())
     live = cs.cli("purge", "--executer", env={**env, **cs.policy_env()})   # purged since the backup was made
     assert live.returncode == 0 and "0 copie(s) échue(s) restante(s)" in live.stdout
-    assert set(cs.scan(vin, plate)) == {"cpl.runner_artifacts.payload"}
+    assert set(cs.scan(vin, plate)) == set()        # the vir_resolution artifact never held them (REQ-B6-091)
 
     restore = ["bash", str(REPO / "deploy" / "restaurer.sh")]
     lock = tmp_path / "montage" / "RESTAURATION_A_PURGER"
@@ -200,7 +200,7 @@ async def test_an_old_backup_restored_is_purged_before_the_service_reopens(app, 
     assert r.returncode == 0, r.stdout + r.stderr
     assert not lock.exists() and "n'est pas relancé" in r.stdout and "Sessions web révoquées" in r.stdout
     assert vin not in r.stdout + r.stderr and plate not in r.stdout + r.stderr
-    assert set(cs.scan(vin, plate, database_url=url_b)) == {"cpl.runner_artifacts.payload"}
+    assert set(cs.scan(vin, plate, database_url=url_b)) == set()
     assert query(url_b, "SELECT count(*) FROM pi_auth.web_sessions")[0][0] == 0
     op = query(url_b, "SELECT trigger, outcome FROM pi_auth.conservation_operations ORDER BY started_at DESC LIMIT 1")
     assert tuple(op[0]) == ("after_restore", "completed")

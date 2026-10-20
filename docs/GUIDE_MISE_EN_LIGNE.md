@@ -11,10 +11,10 @@ fournisseurs, ni l'activation d'un composant réel de tri (§9, §10, §11). Lis
 
 | Composant | Révision | Remarque |
 |---|---|---|
-| PI (`cpl-product-integration`) | branche `pi-cloture-pgdr` (depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
+| PI (`cpl-product-integration`) | branche `pi-conservation-plaque` (depuis `pi-cloture-pgdr` @ `70a15b3`, depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`, depuis `pi-3b-reception-livraison` @ `7010674`, depuis `pi-3a-persistance-securite` @ `a325c23`, qui contient `pi-parcours-photo` @ `2036724` et `pi-preparation-production` @ `434d6c2`) ; révision installée relevée dans `$PREFIX/COMPOSITION.installee` | seule couche de composition |
 | VIR | `a4c0172f02e5535d542ecc6f4d16e0c13f9c6b60` (`vir-v1-finalisation`) | non modifié |
 | PGDR | `55f76ae4e1923a3d10110b0e7e140de25301cc72` (`v1-cloture`, depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | clôture V1 : parcours sans notice (textes retenus, consignes de sécurité) à côté de chaque refus, aucune saisie libre ; provenance par champ, applicabilité en quatre questions, attestation par véhicule et version, rattachement des validations ; statut d'enregistrement sous la restitution (3B) |
-| CPL | `bc09253170256b9888c03249d90b7cac6751311b` (branche `cpl-source-veracity-029`) | migration 029 incluse ; schéma non modifié depuis |
+| CPL | `253ff8ffed67afcb48d2daf80863f9fb7f3c1999` (branche `cpl-conservation-plaque`, depuis `cpl-source-veracity-029` @ `bc09253`) | migration 030 (REQ-B6-091 : expurgation gouvernée de plaque et VIN des artefacts `vir_resolution`, schéma seul) |
 | GGM | 1.0.0, roue SHA-256 `41459158…99a7` | fournie hors PyPI |
 | Python | ≥ 3.14 (essais : 3.14.2) | |
 | Dépendances Python | `deploy/requirements.lock` (39 paquets, versions exactes) | sans empreintes : les roues diffèrent selon la plateforme |
@@ -235,12 +235,13 @@ parcours des voyants inachevé, et un résultat confirmé que CPL n'a pas enregi
 Toujours précédées d'une sauvegarde (§8).
 
 ```bash
-deploy/migrer.sh upgrade          # CPL jusqu'à 029 (head), puis schéma pi_auth
+deploy/migrer.sh upgrade          # CPL jusqu'à 030 (head), puis schéma pi_auth
 deploy/migrer.sh downgrade 028    # supprime pi_auth (comptes et sessions), puis CPL → 028
 ```
 
 La descente de 029 est documentée par CPL comme non totalement réversible (états
-`OWNER_ATTESTED_UNVERIFIED`). Base VIR existante : ordre de `docs/LIVRAISON_VIR_V1.md` §6
+`OWNER_ATTESTED_UNVERIFIED`). La descente de 030 est refusée dès qu'un artefact a été expurgé
+(son contenu d'origine n'existe plus). Base VIR existante : ordre de `docs/LIVRAISON_VIR_V1.md` §6
 (dépôt VIR) — `vir backup`, `vir migrate-owners`, `vir migrate-storage`, `vir check-storage`.
 Retour arrière du code : arrêter, réinstaller la composition précédente dans un PREFIX neuf
 (`deploy/installer.sh` depuis l'ancien commit PI), restaurer si besoin la sauvegarde prise
@@ -326,7 +327,7 @@ Premier Constat) :
 |---|---|---|
 | `cpl.asset_identity_resolutions.canonical_identity_payload` (une par résultat VIR enregistré, y compris confirmations, corrections, retraits) | `identifiers.vin`, `identifiers.registration_number` | vidés (null) ; `identifiers_not_kept` liste les champs retirés ; pays d'immatriculation, autres champs, statut, provenance et liens conservés |
 | `automotive.vehicle_details` | `vin_display`, `registration_display` | vidés quand aucun enregistrement d'identification encore dans sa période ne porte la même valeur ; marque, modèle, pays, `source_resolution_id` conservés |
-| `cpl.runner_artifacts.payload`, artefacts `vir_resolution` | identité, candidats, `field_evidence[]` | **non vidés** (§9.3) |
+| `cpl.runner_artifacts.payload`, artefacts `vir_resolution` | enregistrés depuis REQ-B6-091 : **aucune** plaque ni VIN ; enregistrés avant : identité, candidats, `field_evidence[]`, contradictions, champ fournisseur brut `numSerieMoteur` | non vidés par la purge, qui les compte ; expurgés par la commande CPL (§9.3) |
 
 Ni `pi_auth`, ni les Premiers Constats (`pgdr_v1_premier_constat`), ni le passage vers PGDR, ni les
 journaux ne contiennent plaque ou VIN. Les copies dans le stockage VIR suivent `VIR_RETENTION_DAYS`.
@@ -362,19 +363,38 @@ Contrôle de préparation : signale toute catégorie non définie, une durée po
 production, `scripts/lancer_montage.sh` l'exécute et affiche un avertissement si la configuration
 est incomplète (sans bloquer : les durées ne sont pas décidées).
 
-### 9.3 Artefacts `vir_resolution` — expurgation impossible sans évolution de CPL
+### 9.3 Artefacts `vir_resolution` — plaque et VIN
 
-Arrêt sur ce point, conformément à la consigne : CPL conserve chaque ligne d'artefact en entier
-(REQ-B6-058), ne corrige un contenu que par remplacement (supersession), qui garde l'ancienne
-ligne (REQ-B6-057/059), et signale tout contenu qui ne correspond plus à son `content_hash` sans
-jamais le corriger (REQ-B6-053 à 055). Vider la plaque et le VIN d'un artefact casserait ces
-invariants ; aucune requête directe ni désactivation de protection n'a été employée. Conséquence :
-**après purge, les artefacts `vir_resolution` échus gardent plaque et VIN dans PostgreSQL et dans
-les sauvegardes.** Ils ne sont pas servis par le produit (la route des artefacts retire déjà les
-identifiants) ; la purge les compte (« artefact(s) vir_resolution échu(s) gardent plaque et VIN »).
-Les lever demande une décision du propriétaire et une évolution de CPL (par exemple une expurgation
-gouvernée, avec trace et empreinte recalculée déclarée, au sens de la réserve « separate retention
-policy » de B4 §63), hors de cette passe.
+**Nouvelles écritures.** Depuis CPL `253ff8f` (REQ-B6-091), PI enregistre chaque artefact
+`vir_resolution` sans plaque ni VIN, avec la fonction de CPL qui suit le schéma VIR (identité
+retenue, candidats, preuves et leurs sources, contradictions, choix de clarification, champ
+fournisseur brut documenté comme VIN). Caractéristiques, provenance, contradictions, références
+internes et pays d'immatriculation sont conservés ; le lien au véhicule reste l'identifiant opaque
+CPL. `asset_identity_resolutions` et `vehicle_details` gardent leur traitement (§9.1).
+
+**Artefacts enregistrés avant.** Ils gardent plaque et VIN jusqu'à l'expurgation gouvernée de CPL,
+lancée par l'opérateur, jamais par une requête directe de PI :
+
+```bash
+cd "$PREFIX/src/cpl"
+"$PREFIX/venv/bin/python" -m app.cpl.runners.redaction_command \
+    --motif RETENTION_POLICY --operateur <référence-opaque>          # simulation : rien n'est écrit
+"$PREFIX/venv/bin/python" -m app.cpl.runners.redaction_command \
+    --motif RETENTION_POLICY --operateur <référence-opaque> --executer
+```
+
+Options : `--avant <date ISO avec fuseau>` (aucune durée n'est décidée par la commande),
+`--artefact <id>` (répétable). Motifs : `RETENTION_POLICY`, `DATA_SUBJECT_REQUEST`. La commande
+n'affiche que des comptes et des identifiants d'artefacts. Pour chaque artefact (et chaque version
+liée par remplacement) : ligne, identifiant, liens et statut conservés, état `REDACTED`, empreinte
+d'origine gardée comme trace, empreinte du contenu restant recalculée, décision gouvernée et trace
+(date, opération, motif, opérateur opaque, emplacements nommés) sans aucune ancienne valeur.
+Idempotente ; un artefact dont le contenu ne correspond plus à son empreinte est refusé. Le contrôle
+d'intégrité distingue original intact, expurgé par l'opération autorisée, altération non
+autorisée. La purge PI compte les artefacts échus qui gardent encore plaque ou VIN.
+
+Toujours précédée d'une sauvegarde (§8). **Les sauvegardes antérieures gardent les valeurs** : leur
+sort suit `PI_CONSERVATION_SAUVEGARDES_JOURS`. Aucune expurgation de données réelles n'a été faite.
 
 ## 10. Limites effectives
 
@@ -415,12 +435,12 @@ policy » de B4 §63), hors de cette passe.
 3. Gestionnaire de secrets (ou fichier protégé) pour les valeurs du §4.
 4. Décisions du propriétaire sur la conservation (§9) : durée VIR (`VIR_RETENTION_DAYS`, les
    30 jours par défaut **ne sont pas une durée approuvée**), plaque et VIN (et point de départ),
-   dossiers (illimitée ou évolution de CPL), médias, journaux, sauvegardes ; sort des artefacts
-   `vir_resolution` (§9.3, évolution de CPL).
+   dossiers (illimitée ou évolution de CPL), médias, journaux, sauvegardes ; lancement de
+   l'expurgation des artefacts `vir_resolution` enregistrés avant REQ-B6-091 (§9.3).
 5. Droits d'usage et contrats des fournisseurs VIR (RegCheck, Vincario) : **non acquis** ;
    tant qu'ils ne le sont pas, VIR reste en mode simulé ; aucune activation réelle autorisée.
 6. Décision de fusion des branches PI (`pi-3b-reception-livraison`), PGDR (`v1-3b-reception`)
-   et CPL (`cpl-source-veracity-029`) ; migration réelle de la base jusqu'à 029.
+   et CPL (`cpl-conservation-plaque`) ; migration réelle de la base jusqu'à 030.
 7. Analyse photo : nouveau mandat, qualification et autorisation distinctes (§10) ; de même
    pour tout composant réel de tri des images proposées (fournisseur, conservation, contrat,
    évaluation de la qualité sur notice réelle).

@@ -106,7 +106,7 @@ def simulate(environ=None, now: Optional[datetime] = None) -> Report:
             report.lines.append(Line(IDENTIFIERS.key, IDENTIFIERS.label, s.describe(),
                 f"{len(p.resolutions)} résolution(s) d'identité et {len(p.vehicle_details)} fiche(s) véhicule seraient "
                 f"vidées de plaque et VIN ; {p.artifacts_blocked} artefact(s) vir_resolution échu(s) les garderaient "
-                f"(expurgation impossible sans évolution de CPL)"))
+                f"(antérieurs à REQ-B6-091 : expurgation par la commande CPL, sur décision de l'opérateur)"))
 
         s = policy[CASES.key]
         detail = NO_POLICY if not s.defined else (
@@ -199,7 +199,8 @@ def execute(environ=None, now: Optional[datetime] = None, trigger: str = "operat
                 f"{counts['resolutions']} résolution(s) d'identité et {counts['vehicle_details']} fiche(s) véhicule "
                 f"vidées ; vérification : {left['asset_identity_resolutions'] + left['vehicle_details']} copie(s) "
                 f"échue(s) restante(s) hors artefacts ; {counts['artifacts_blocked']} artefact(s) vir_resolution "
-                f"échu(s) gardent plaque et VIN (expurgation impossible sans évolution de CPL)"))
+                f"échu(s) gardent plaque et VIN (antérieurs à REQ-B6-091 : expurgation par la commande CPL, sur "
+                f"décision de l'opérateur)"))
             counts["remaining"] = left["asset_identity_resolutions"] + left["vehicle_details"]
         else:
             report.lines.append(Line(IDENTIFIERS.key, IDENTIFIERS.label, s.describe(), "rien supprimé"))

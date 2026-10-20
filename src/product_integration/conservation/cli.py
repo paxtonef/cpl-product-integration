@@ -111,8 +111,8 @@ def readiness(environ=None) -> tuple[bool, list[str]]:
         complete = False
         lines.append(f"{CASES.env} : durée non applicable (aucune suppression de dossier dans CPL)")
     if policy[IDENTIFIERS.key].days is not None:
-        lines.append("limite : les artefacts vir_resolution de CPL gardent plaque et VIN (expurgation impossible "
-                     "sans évolution de CPL) ; voir le guide §9")
+        lines.append("limite : les artefacts vir_resolution enregistrés avant REQ-B6-091 gardent plaque et VIN "
+                     "jusqu'à l'expurgation par la commande CPL (simulation par défaut) ; voir le guide §9.3")
     if not environ.get("VIR_RETENTION_DAYS", "").strip():
         complete = False
         lines.append("VIR_RETENTION_DAYS (stockage VIR, réglage propre à VIR) : non défini")

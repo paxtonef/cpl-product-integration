@@ -151,7 +151,8 @@ async def test_purge_empties_due_identifiers_everywhere_allowed_and_keeps_cases_
     constat_before = _premier_constat(old)
     assert len(constat_before) == 1
     before_scan = cs.scan(vin, plate)
-    assert set(before_scan) == {"cpl.runner_artifacts.payload", "cpl.asset_identity_resolutions.canonical_identity_payload",
+    # REQ-B6-091: the vir_resolution artifacts are registered without the plate and the VIN.
+    assert set(before_scan) == {"cpl.asset_identity_resolutions.canonical_identity_payload",
                                 "automotive.vehicle_details.vin_display", "automotive.vehicle_details.registration_display"}
 
     # simulation: counts, nothing written
@@ -175,8 +176,9 @@ async def test_purge_empties_due_identifiers_everywhere_allowed_and_keeps_cases_
     after_scan = cs.scan(vin, plate)
     assert after_scan["cpl.asset_identity_resolutions.canonical_identity_payload"] == 1          # the recent case
     assert after_scan["automotive.vehicle_details.vin_display"] == 1                              # the recent case
-    # ... and still in the vir_resolution artifacts: CPL forbids emptying them (reported, see the guide)
-    assert after_scan["cpl.runner_artifacts.payload"] == before_scan["cpl.runner_artifacts.payload"]
+    # ... and never in the vir_resolution artifacts, registered without them (REQ-B6-091; older artifacts:
+    # tests/test_conservation_artefacts.py)
+    assert "cpl.runner_artifacts.payload" not in after_scan
     assert not any(k.startswith("pi_auth.") for k in after_scan)                                  # no value in the trace
     for c in (old, hand):
         ids = _case_ids(c)
@@ -206,7 +208,7 @@ async def test_purge_empties_due_identifiers_everywhere_allowed_and_keeps_cases_
                                "WHERE o.started_at = (SELECT max(started_at) FROM pi_auth.conservation_operations)")).all()
     assert op.outcome == "completed" and op.trigger == "operator"
     assert op.counts["resolutions"] == 5 and op.counts["vehicle_details"] == 2 and op.counts["media"] == 1
-    assert op.counts["artifacts_blocked"] >= 4 and op.policy["identifiants"]["days"] == 30
+    assert op.counts["artifacts_blocked"] == 0 and op.policy["identifiants"]["days"] == 30
     assert sorted(m.target_kind for m in marks).count("asset_identity_resolution") == 5
 
     # reading after the purge: understandable, rights kept

@@ -65,6 +65,7 @@ from app.cpl.models.asset_identity_resolution import AssetIdentityResolution
 from app.cpl.models.runner_artifact import RunnerArtifact
 from app.cpl.runners.execution import admit_execution, transition_status, persist_runner_report
 from app.cpl.runners.artifacts import register_artifact
+from app.cpl.runners.redaction import redact_vehicle_identifiers
 from app.cpl.runners.outcomes import RunnerOutcome
 from app.cpl.models.runner_artifact_schema_definition import RunnerArtifactSchemaDefinition
 from app.db.engine import session_scope
@@ -176,7 +177,10 @@ def _persist_vir_resolution(
             artifact_result = register_artifact(
                 session, execution_id=execution_id, artifact_type="vir_resolution",
                 schema_name=VIR_RESOLUTION_SCHEMA_NAME, schema_version=VIR_RESOLUTION_SCHEMA_VERSION,
-                payload=vir_resolution.model_dump(mode="json"),
+                # Without the plate and the VIN (REQ-B6-091's locations, CPL's own function): the artifact keeps
+                # the characteristics, provenance, contradictions and references; the identifiers are kept only in
+                # asset_identity_resolutions and vehicle_details, whose conservation is handled apart.
+                payload=redact_vehicle_identifiers(vir_resolution.model_dump(mode="json"))[0],
                 semantic_function="DOMAIN_DETERMINATION_CARRIER", lifecycle_role="FINAL",
                 presentation_role="INTERNAL", authority=authority,
             )
